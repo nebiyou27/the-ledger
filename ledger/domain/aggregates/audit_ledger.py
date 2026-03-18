@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.models.events import DomainError
+
 
 @dataclass
 class AuditLedgerAggregate:
@@ -41,11 +43,11 @@ class AuditLedgerAggregate:
         tamper_detected = bool(payload.get("tamper_detected"))
 
         if self.last_hash is None and previous_hash not in (None, ""):
-            raise ValueError("First audit integrity event must have null previous_hash")
+            raise DomainError("First audit integrity event must have null previous_hash")
         if self.last_hash is not None and previous_hash != self.last_hash:
             self.chain_valid = False
             self.tamper_detected = True
-            raise ValueError("Audit chain broken: previous_hash does not match")
+            raise DomainError("Audit chain broken: previous_hash does not match")
 
         if tamper_detected or not chain_valid:
             self.chain_valid = False

@@ -12,7 +12,7 @@ from ledger.event_store import OptimisticConcurrencyError
 from ledger.schema.events import *  # re-export canonical event catalogue
 
 
-class DomainError(Exception):
+class DomainError(ValueError):
     """Domain invariant violation."""
 
 
@@ -47,4 +47,3 @@ __all__ = [
     "OptimisticConcurrencyError",
     "DomainError",
 ]
-

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.models.events import DomainError
+
 
 class AgentSessionState(str, Enum):
     NEW = "NEW"
@@ -49,11 +51,11 @@ class AgentSessionAggregate:
 
         # Gas Town invariant: first event must declare context.
         if self.state == AgentSessionState.NEW and event_type != "AgentSessionStarted":
-            raise ValueError("AgentSession must start with AgentSessionStarted")
+            raise DomainError("AgentSession must start with AgentSessionStarted")
 
         if event_type == "AgentSessionStarted":
             if self.state != AgentSessionState.NEW:
-                raise ValueError("Duplicate AgentSessionStarted event")
+                raise DomainError("Duplicate AgentSessionStarted event")
             self.session_id = payload.get("session_id")
             self.agent_type = str(payload.get("agent_type") or "")
             self.agent_id = payload.get("agent_id")
@@ -67,13 +69,13 @@ class AgentSessionAggregate:
         if self.state in (AgentSessionState.COMPLETED, AgentSessionState.FAILED):
             # Recovery is the only event allowed after a terminal state.
             if event_type != "AgentSessionRecovered":
-                raise ValueError(f"Cannot append {event_type} after terminal state {self.state.value}")
+                raise DomainError(f"Cannot append {event_type} after terminal state {self.state.value}")
 
         # Validate identity continuity in-stream.
         if payload.get("session_id") and self.session_id and payload.get("session_id") != self.session_id:
-            raise ValueError("Mismatched session_id in AgentSession stream")
+            raise DomainError("Mismatched session_id in AgentSession stream")
         if payload.get("agent_type") and self.agent_type and str(payload.get("agent_type")) != self.agent_type:
-            raise ValueError("Mismatched agent_type in AgentSession stream")
+            raise DomainError("Mismatched agent_type in AgentSession stream")
 
         if event_type == "AgentNodeExecuted":
             self._require_context(event_type)
@@ -95,7 +97,7 @@ class AgentSessionAggregate:
             # Model-version locking: if event carries a version-like field, it must match.
             payload_model_version = payload.get("model_version")
             if payload_model_version and self.model_version and payload_model_version != self.model_version:
-                raise ValueError("Agent session model version changed mid-session")
+                raise DomainError("Agent session model version changed mid-session")
             self.state = AgentSessionState.COMPLETED
             return
 
@@ -115,4 +117,4 @@ class AgentSessionAggregate:
 
     def _require_context(self, event_type: str) -> None:
         if not self.context_loaded:
-            raise ValueError(f"{event_type} requires loaded context")
+            raise DomainError(f"{event_type} requires loaded context")

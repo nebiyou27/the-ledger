@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.models.events import DomainError
+
 
 @dataclass
 class ComplianceRecordAggregate:
@@ -39,7 +41,7 @@ class ComplianceRecordAggregate:
 
         if event_type == "ComplianceCheckInitiated":
             if self.session_id is not None:
-                raise ValueError("Compliance check already initiated")
+                raise DomainError("Compliance check already initiated")
             self.session_id = payload.get("session_id")
             self.regulation_set_version = payload.get("regulation_set_version")
             self.required_rules = set(payload.get("rules_to_evaluate") or [])
@@ -69,15 +71,15 @@ class ComplianceRecordAggregate:
 
     def _require_initiated(self, event_type: str) -> None:
         if self.session_id is None:
-            raise ValueError(f"{event_type} requires ComplianceCheckInitiated first")
+            raise DomainError(f"{event_type} requires ComplianceCheckInitiated first")
         if self.completed:
-            raise ValueError(f"Cannot append {event_type} after ComplianceCheckCompleted")
+            raise DomainError(f"Cannot append {event_type} after ComplianceCheckCompleted")
 
     def _record_rule(self, rule_id: str | None, bucket: str) -> None:
         if not rule_id:
-            raise ValueError("Compliance rule events require rule_id")
+            raise DomainError("Compliance rule events require rule_id")
         if rule_id in self.passed_rules or rule_id in self.failed_rules or rule_id in self.noted_rules:
-            raise ValueError(f"Rule {rule_id} already evaluated")
+            raise DomainError(f"Rule {rule_id} already evaluated")
         if bucket == "passed":
             self.passed_rules.add(rule_id)
         elif bucket == "failed":
@@ -90,18 +92,18 @@ class ComplianceRecordAggregate:
 
         if not self.hard_block and self.required_rules and not self.required_rules.issubset(evaluated):
             missing = sorted(self.required_rules - evaluated)
-            raise ValueError(f"Cannot complete compliance check, missing required rules: {missing}")
+            raise DomainError(f"Cannot complete compliance check, missing required rules: {missing}")
 
         if int(payload.get("rules_passed", -1)) != len(self.passed_rules):
-            raise ValueError("rules_passed count mismatch")
+            raise DomainError("rules_passed count mismatch")
         if int(payload.get("rules_failed", -1)) != len(self.failed_rules):
-            raise ValueError("rules_failed count mismatch")
+            raise DomainError("rules_failed count mismatch")
         if int(payload.get("rules_noted", -1)) != len(self.noted_rules):
-            raise ValueError("rules_noted count mismatch")
+            raise DomainError("rules_noted count mismatch")
 
         verdict = str(payload.get("overall_verdict") or "")
         if self.hard_block and verdict != "BLOCKED":
-            raise ValueError("Hard block requires BLOCKED verdict")
+            raise DomainError("Hard block requires BLOCKED verdict")
 
         self.verdict = verdict
         self.completed = True

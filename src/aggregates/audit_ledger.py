@@ -1,0 +1,5 @@
+"""Deliverable-path shim to AuditLedgerAggregate."""
+
+from ledger.domain.aggregates.audit_ledger import AuditLedgerAggregate
+
+__all__ = ["AuditLedgerAggregate"]

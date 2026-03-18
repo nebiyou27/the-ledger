@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.models.events import DomainError
+
 
 class ApplicationState(str, Enum):
     NEW = "NEW"
@@ -56,6 +58,16 @@ class LoanApplicationAggregate:
     decision_recommendation: str | None = None
     decision_confidence: float | None = None
     events: list[dict] = field(default_factory=list)
+
+    def assert_can_approve(self, required_rules: set[str], passed_rules: set[str], verdict: str | None) -> None:
+        normalized_verdict = (verdict or "").upper()
+        if normalized_verdict in ("", "BLOCKED"):
+            raise DomainError("ApplicationApproved requires completed non-blocked compliance")
+        missing = sorted(set(required_rules) - set(passed_rules))
+        if missing:
+            raise DomainError(
+                f"ApplicationApproved requires all required compliance rules passed: {missing}"
+            )
 
     @classmethod
     async def load(cls, store, application_id: str) -> "LoanApplicationAggregate":
@@ -142,11 +154,11 @@ class LoanApplicationAggregate:
 
             # Regulatory floor: low-confidence decisions must route to REFER.
             if confidence is not None and confidence < 0.60 and recommendation != "REFER":
-                raise ValueError("DecisionGenerated with confidence < 0.60 must use REFER recommendation")
+                raise DomainError("DecisionGenerated with confidence < 0.60 must use REFER recommendation")
 
             # Compliance block is a hard constraint on downstream decisioning.
             if self.compliance_verdict == "BLOCKED" and recommendation != "DECLINE":
-                raise ValueError("Compliance BLOCKED only allows DECLINE recommendation")
+                raise DomainError("Compliance BLOCKED only allows DECLINE recommendation")
 
             self.decision_recommendation = recommendation
             self.decision_confidence = confidence
@@ -172,7 +184,7 @@ class LoanApplicationAggregate:
 
         if event_type == "ApplicationApproved":
             if self.compliance_verdict in (None, "", "BLOCKED"):
-                raise ValueError("ApplicationApproved requires completed non-blocked compliance")
+                raise DomainError("ApplicationApproved requires completed non-blocked compliance")
             self.state = ApplicationState.APPROVED
             return
 
@@ -186,4 +198,4 @@ class LoanApplicationAggregate:
     def assert_valid_transition(self, target: ApplicationState) -> None:
         allowed = VALID_TRANSITIONS.get(self.state, [])
         if target not in allowed:
-            raise ValueError(f"Invalid transition {self.state} -> {target}. Allowed: {allowed}")
+            raise DomainError(f"Invalid transition {self.state} -> {target}. Allowed: {allowed}")
