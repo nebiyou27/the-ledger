@@ -700,3 +700,66 @@ Fraud screening events currently land in the loan stream because fraud does not 
 **What happens:** Someone writes a "correcting" event and backdates its `recorded_at` to make it look like it happened in the past. This corrupts temporal queries.
 
 **Defense:** The `recorded_at` timestamp is set by the event store at write time, never accepted from the caller. The event store uses `datetime.utcnow()` (or PostgreSQL's `NOW()`). Callers can include a `business_timestamp` in the payload if they need to record when something happened in the real world, but `recorded_at` is always the storage timestamp and is not caller-controlled.
+
+---
+
+## 7. The Determinism Constraint: Why AI Cannot Live Inside the Aggregate
+
+### The Question
+
+The loan processing system uses LLMs heavily — the credit agent analyzes risk, and the compliance agent evaluates regulatory rules. If I need to rebuild the state of the `CreditRecord` aggregate by replaying its events, should the aggregate's `apply()` method invoke the LLM to recalculate the decision? Why or why not, and how does this shape the architectural boundary between the AI agents and the aggregate itself?
+
+### Direct Answer
+
+No. Replaying events must be **strictly deterministic** and **free of side effects**. If rebuilding state involved calling an LLM, the state would mutate randomly upon replay due to AI nondeterminism, and replays would be prohibitively slow and expensive.
+
+### Architectural Boundary
+
+The AI agent acts as the **Command Handler**, while the aggregate acts as the **State Machine**:
+
+1. **The Agent (Command Handler):** Gathers inputs, makes the non-deterministic LLM call, and decides *what happened*. It then translates this into a deterministic fact: `CreditAnalysisCompleted(risk_tier="HIGH", confidence=0.89)`.
+2. **The Aggregate (State Machine):** Exists only to validate invariants (e.g., "you cannot complete credit analysis if documents are pending") and apply the resulting events. Its `apply()` function simply does `self.risk_tier = event.payload.risk_tier`.
+
+When an aggregate is reloaded from the event store, it only runs the `apply()` methods over past events. It never re-runs the commands or the LLM inferences that produced them. The event is a permanent, deterministic record of a non-deterministic process.
+
+---
+
+## 8. Outbox Pattern vs. Dual-Write Problem
+
+### The Question
+
+After the credit agent successfully appends a `CreditAnalysisCompleted` event to the `credit-{id}` stream, the system needs to wake up the compliance agent to begin its work. A junior developer proposes simply publishing a message to a RabbitMQ or Kafka topic immediately after the `event_store.append()` call succeeds. What distributed systems failure mode does this invite, and how does the `outbox` table solve it?
+
+### Direct Answer
+
+It invites the **Dual-Write Problem** resulting in phantom events or lost messages. If the database transaction commits but the network call to the message broker fails or times out, the event is saved but the compliance agent is never woken up (lost message). Conversely, if you publish to the broker *before* committing the database transaction, and the database subsequently rolls back due to a conflict, the compliance agent wakes up to process an event that doesn't actually exist (phantom event).
+
+### The Outbox Solution
+
+The `outbox` table guarantees **atomic publication intent**:
+
+1. In the exactly **same PostgreSQL transaction** where the event is appended to the `events` table, we INSERT a row into the `outbox` table containing the message we want to broadcast.
+2. If the transaction commits, both the event and the outgoing message are saved. If it fails, neither are.
+3. A separate, asynchronous background process (the "Relay" or "Dispatcher") constantly polls or tails the `outbox` table.
+4. When it sees an unpublished message, it sends it to the broker. Once the broker acknowledges receipt, the relay marks the `outbox` row as `published_at = NOW()`.
+
+This shifts the guarantee from "best effort" to **at-least-once delivery**, ensuring downstream agents never miss a legitimately committed event.
+
+---
+
+## 9. GDPR and the Append-Only Log: The Right to Erasure
+
+### The Question
+
+A fundamental principle of Event Sourcing is that the `events` table is completely immutable — we never run `UPDATE` or `DELETE` on historical events. However, a loan applicant calls and invokes their GDPR Right to Erasure (Right to be Forgotten). We are legally required to delete their Personally Identifiable Information (PII). How do we resolve the conflict between an append-only architecture and the legal requirement to delete data?
+
+### Direct Answer
+
+We use **Crypto-Shredding**. PII is never stored in plaintext within the event payloads. Instead, we encrypt the PII before saving the event, and we store the encryption key in a separate, mutable key-management store. To "delete" the user's data, we simply delete their encryption key.
+
+### How Crypto-Shredding Works in Practice
+
+1. **Write Time:** When the `DocumentPackage` aggregate receives a passport scan, it calls a Key Management Service (KMS) to generate or retrieve a unique encryption key for user `U-1234`. It encrypts the sensitive extracted facts (Name, SSN, Address) and stores the ciphertext in the event payload.
+2. **Read Time:** When projecting the event to a dashboard, the projection worker must fetch the key, decrypt the payload, and update the read model.
+3. **Erasure Request:** We DO NOT touch the `events` table. Instead, we permanently delete the key for `U-1234` from the KMS.
+4. **The Result:** The event payloads immediately revert to cryptographically secure gibberish. Since the key is destroyed, the ciphertext is irrevocably anonymized. The structural integrity of the event stream and its cryptographic hashes (like `AuditIntegrityCheckRun`) remain completely unbroken, but the PII is legally and technically "erased." We then emit a `UserErased` event to trigger downstream projections to overwrite their decrypted read models with `NULL` or `[REDACTED]`.

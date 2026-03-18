@@ -25,6 +25,12 @@ Thumbs.db
 # Local database or logs if any
 *.log
 
+# Optional: final notes or reports
+domain_notes_final.md
+
+# Optional: artifacts from the challenge
+artifacts/
+
 # Optional: compiled coverage files
 .coverage
 htmlcov/

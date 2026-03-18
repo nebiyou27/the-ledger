@@ -44,6 +44,10 @@ from uuid import uuid4
 from langgraph.graph import StateGraph, END
 
 from ledger.agents.base_agent import BaseApexAgent
+from ledger.domain.aggregates.loan_application import (
+    ApplicationState,
+    LoanApplicationAggregate,
+)
 from ledger.schema.events import (
     CreditRecordOpened, HistoricalProfileConsumed, ExtractedFactsConsumed,
     CreditAnalysisCompleted, CreditAnalysisDeferred,
@@ -119,43 +123,47 @@ class CreditAnalysisAgent(BaseApexAgent):
     async def _node_validate_inputs(self, state: CreditState) -> CreditState:
         t = time.time()
         app_id = state["application_id"]
-        errors = []
+        errors: list[str] = []
 
-        # Load LoanApplicationAggregate to get applicant_id and amounts
-        # TODO: implement LoanApplicationAggregate.load()
-        # app = await LoanApplicationAggregate.load(self.store, app_id)
-        # if app.state not in (ApplicationState.DOCUMENTS_PROCESSED, ApplicationState.CREDIT_ANALYSIS_REQUESTED):
-        #     errors.append(f"Expected DOCUMENTS_PROCESSED, got {app.state}")
-        # state["applicant_id"]         = app.applicant_id
-        # state["requested_amount_usd"] = float(app.requested_amount_usd)
-        # state["loan_purpose"]         = app.loan_purpose.value
+        app = await LoanApplicationAggregate.load(self.store, app_id)
+        if app.state not in (
+            ApplicationState.DOCUMENTS_PROCESSED,
+            ApplicationState.CREDIT_ANALYSIS_REQUESTED,
+        ):
+            errors.append(
+                f"Expected DOCUMENTS_PROCESSED or CREDIT_ANALYSIS_REQUESTED, got {app.state.value}"
+            )
 
-        # PLACEHOLDER — remove when LoanApplicationAggregate is implemented
-        state["applicant_id"]         = f"COMP-001"
-        state["requested_amount_usd"] = 500_000.0
-        state["loan_purpose"]         = "working_capital"
+        if not app.applicant_id:
+            errors.append("Missing applicant_id on LoanApplication aggregate")
+        if app.requested_amount_usd is None:
+            errors.append("Missing requested_amount_usd on LoanApplication aggregate")
+        if not app.loan_purpose:
+            errors.append("Missing loan_purpose on LoanApplication aggregate")
 
-        # Verify package is ready
-        # TODO: pkg = await DocumentPackageAggregate.load(self.store, app_id)
-        # if not pkg.is_ready_for_analysis:
-        #     errors.append("Document package not ready")
+        pkg_events = await self.store.load_stream(f"docpkg-{app_id}")
+        if not any(ev.get("event_type") == "PackageReadyForAnalysis" for ev in pkg_events):
+            errors.append("Document package is not ready for analysis")
 
         ms = int((time.time() - t) * 1000)
         if errors:
-            await self._record_input_failed([], errors)
             raise ValueError(f"Input validation failed: {errors}")
 
-        await self._record_input_validated(
-            ["application_id", "applicant_id", "document_package_ready"], ms
-        )
+        loan_purpose = app.loan_purpose.value if hasattr(app.loan_purpose, "value") else str(app.loan_purpose)
+        requested_amount = float(app.requested_amount_usd) if app.requested_amount_usd is not None else None
         await self._record_node_execution(
             "validate_inputs",
             ["application_id"],
             ["applicant_id", "requested_amount_usd", "loan_purpose"],
             ms,
         )
-        return {**state, "errors": errors}
-
+        return {
+            **state,
+            "applicant_id": app.applicant_id,
+            "requested_amount_usd": requested_amount,
+            "loan_purpose": loan_purpose,
+            "errors": errors,
+        }
     # ── NODE 2: OPEN CREDIT RECORD ────────────────────────────────────────────
     async def _node_open_credit_record(self, state: CreditState) -> CreditState:
         t = time.time()
