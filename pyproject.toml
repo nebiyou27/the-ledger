@@ -1,0 +1,32 @@
+[project]
+name = "the-ledger"
+version = "0.1.0"
+description = "Event-sourced agentic ledger challenge project"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "asyncpg==0.29.0",
+  "anthropic==0.39.0",
+  "pydantic==2.12.5",
+  "langgraph==0.2.76",
+  "faker==25.9.2",
+  "reportlab==4.4.10",
+  "openpyxl==3.1.5",
+  "fastmcp==3.1.1",
+  "python-dotenv==1.2.2",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==8.4.2",
+  "pytest-asyncio==0.24.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+addopts = "-q"
+

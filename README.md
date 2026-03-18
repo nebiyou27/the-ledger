@@ -40,10 +40,22 @@ Stream position convention in this starter is **0-based**:
 pip install -r requirements.txt
 ```
 
+Or with `uv` (locked):
+
+```bash
+uv sync --all-groups
+```
+
 ### 2. Start PostgreSQL
 
 ```bash
 docker run -d --name ledger-postgres -e POSTGRES_PASSWORD=apex -e POSTGRES_DB=apex_ledger -p 5432:5432 postgres:16
+```
+
+### 2b. Run database schema migration
+
+```bash
+psql postgresql://postgres:apex@localhost/apex_ledger -f src/schema.sql
 ```
 
 ### 3. Configure environment
@@ -75,6 +87,7 @@ python datagen/generate_all.py --skip-db --skip-docs --validate-only
 pytest tests/test_schema_and_generator.py -v
 pytest tests/test_event_store.py -v
 pytest tests/test_narratives.py -v
+pytest tests/test_concurrency.py -v
 ```
 
 ## Implementation Roadmap
@@ -93,6 +106,7 @@ pytest tests/test_narratives.py -v
 
 ```text
 .
+  src/              # Deliverable compatibility paths (schema, handlers, models)
   datagen/          # Synthetic dataset and event generation
   data/             # Generated artifacts
   ledger/           # Core runtime and domain code
@@ -100,6 +114,17 @@ pytest tests/test_narratives.py -v
   sql/              # Database schema and setup
   tests/            # Phase-based gates
 ```
+
+## Sunday Interim Deliverables
+
+- SQL schema: `src/schema.sql`
+- Event store class: `src/event_store.py`
+- Event models + exceptions: `src/models/events.py`
+- Loan aggregate: `src/aggregates/loan_application.py`
+- Agent session aggregate: `src/aggregates/agent_session.py`
+- Command handlers: `src/commands/handlers.py`
+- Concurrency test: `tests/test_concurrency.py`
+- Locked dependencies: `pyproject.toml` (use `uv sync`)
 
 ## Environment Variables
 
