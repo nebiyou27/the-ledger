@@ -1,12 +1,11 @@
+"""Deliverable-path projection exports."""
+
 from .agent_performance import AgentPerformanceProjection
 from .application_summary import ApplicationSummaryProjection
-from .base import Projection, ProjectionLag
 from .compliance_audit import ComplianceAuditProjection
 from .daemon import ProjectionDaemon
 
 __all__ = [
-    "Projection",
-    "ProjectionLag",
     "ProjectionDaemon",
     "ApplicationSummaryProjection",
     "AgentPerformanceProjection",

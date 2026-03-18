@@ -31,6 +31,15 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _normalize_recorded_at(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return _utcnow()
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
@@ -151,7 +160,7 @@ class EventStore:
 
                 for offset, event in enumerate(events):
                     position = expected_version + offset + 1
-                    stored_at = _utcnow()
+                    stored_at = _normalize_recorded_at(event.get("recorded_at"))
                     event_row = await conn.fetchrow(
                         "INSERT INTO events "
                         "(stream_id, stream_position, event_type, event_version, payload, metadata, recorded_at) "
@@ -422,7 +431,7 @@ class InMemoryEventStore:
                     "event_version": event.get("event_version", 1),
                     "payload": dict(event.get("payload", {})),
                     "metadata": dict(base_metadata),
-                    "recorded_at": _utcnow(),
+                    "recorded_at": _normalize_recorded_at(event.get("recorded_at")),
                 }
                 self._streams[stream_id].append(stored)
                 self._global.append(stored)
