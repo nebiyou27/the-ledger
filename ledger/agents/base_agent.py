@@ -12,6 +12,7 @@ from datetime import datetime
 from uuid import uuid4
 from anthropic import AsyncAnthropic
 from langgraph.graph import StateGraph, END
+from ledger.domain.aggregates.agent_session import AgentSessionAggregate
 
 LANGGRAPH_VERSION = "1.0.0"
 MAX_OCC_RETRIES = 5
@@ -98,17 +99,26 @@ class BaseApexAgent(ABC):
             "recoverable":etype in ("llm_timeout","RateLimitError"),"failed_at":datetime.now().isoformat()}})
 
     async def _append_session(self, event: dict):
-        """TODO: replace print with actual EventStore.append() call"""
-        print(f"  [{self.agent_type[:8]}:{self.session_id}] {event['event_type']}")
+        if not self._session_stream:
+            raise RuntimeError("Session stream is not initialized")
+
+        # Validate session invariants in-memory before persistence (Gas Town pattern).
+        agg = await AgentSessionAggregate.load(self.store, self._session_stream)
+        agg.apply(event)
+        await self._append_with_retry(self._session_stream, [event])
 
     async def _append_stream(self, stream_id: str, event_dict: dict, causation_id: str = None):
-        """Append to any aggregate stream with OCC retry."""
+        """Backward-compatible wrapper for single-event append."""
+        await self._append_with_retry(stream_id, [event_dict], causation_id=causation_id)
+
+    async def _append_with_retry(self, stream_id: str, events: list[dict], causation_id: str = None):
+        """Append one or more events with OCC retry."""
         for attempt in range(MAX_OCC_RETRIES):
             try:
                 ver = await self.store.stream_version(stream_id)
-                await self.store.append(stream_id=stream_id, events=[event_dict],
+                positions = await self.store.append(stream_id=stream_id, events=events,
                     expected_version=ver, causation_id=causation_id)
-                return
+                return positions
             except Exception as e:
                 if "OptimisticConcurrencyError" in type(e).__name__ and attempt < MAX_OCC_RETRIES-1:
                     await asyncio.sleep(0.1 * (2**attempt)); continue
