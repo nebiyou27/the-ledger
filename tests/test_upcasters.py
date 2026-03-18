@@ -1,4 +1,7 @@
+import pytest
+
 from ledger.upcasters import UpcasterRegistry, build_default_upcaster_registry
+from ledger.event_store import InMemoryEventStore
 
 
 def test_credit_analysis_upcast_v1_to_v2_adds_regulatory_basis():
@@ -52,3 +55,27 @@ def test_non_target_event_is_returned_unchanged():
     assert upcasted["event_type"] == "ApplicationSubmitted"
     assert upcasted["event_version"] == 1
     assert upcasted["payload"] == {"application_id": "APEX-1"}
+
+
+@pytest.mark.asyncio
+async def test_inmemory_store_applies_default_upcasters_on_read():
+    store = InMemoryEventStore()
+    await store.append(
+        "loan-APEX-1",
+        [
+            {
+                "event_type": "DecisionGenerated",
+                "event_version": 1,
+                "payload": {
+                    "application_id": "APEX-1",
+                    "recommendation": "APPROVE",
+                    "confidence": 0.9,
+                },
+            }
+        ],
+        expected_version=-1,
+    )
+
+    events = await store.load_stream("loan-APEX-1")
+    assert events[0]["event_version"] == 2
+    assert events[0]["payload"]["model_versions"] == {}

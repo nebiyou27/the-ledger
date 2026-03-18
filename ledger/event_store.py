@@ -68,7 +68,7 @@ class EventStore:
 
     def __init__(self, db_url: str, upcaster_registry=None):
         self.db_url = db_url
-        self.upcasters = upcaster_registry
+        self.upcasters = upcaster_registry or _default_upcaster_registry()
         self._pool: Any | None = None
 
     async def connect(self) -> None:
@@ -364,7 +364,7 @@ class InMemoryEventStore:
     """Async-safe in-memory store used by the starter's fast tests."""
 
     def __init__(self, upcaster_registry=None):
-        self.upcasters = upcaster_registry
+        self.upcasters = upcaster_registry or _default_upcaster_registry()
         self._streams: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._versions: dict[str, int] = {}
         self._global: list[dict[str, Any]] = []
@@ -495,6 +495,25 @@ class InMemoryEventStore:
 
     async def load_checkpoint(self, projection_name: str) -> int:
         return self._checkpoints.get(projection_name, 0)
+
+
+def _default_upcaster_registry() -> UpcasterRegistry:
+    """Default read-time migrations registered for event schema evolution."""
+    registry = UpcasterRegistry()
+
+    @registry.upcaster("CreditAnalysisCompleted", from_version=1, to_version=2)
+    def _credit_v1_to_v2(payload: dict) -> dict:
+        next_payload = dict(payload or {})
+        next_payload.setdefault("regulatory_basis", [])
+        return next_payload
+
+    @registry.upcaster("DecisionGenerated", from_version=1, to_version=2)
+    def _decision_v1_to_v2(payload: dict) -> dict:
+        next_payload = dict(payload or {})
+        next_payload.setdefault("model_versions", {})
+        return next_payload
+
+    return registry
 
 
 

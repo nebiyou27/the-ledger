@@ -52,6 +52,9 @@ class LoanApplicationAggregate:
     requested_amount_usd: float | None = None
     loan_purpose: str | None = None
     version: int = -1
+    compliance_verdict: str | None = None
+    decision_recommendation: str | None = None
+    decision_confidence: float | None = None
     events: list[dict] = field(default_factory=list)
 
     @classmethod
@@ -121,6 +124,7 @@ class LoanApplicationAggregate:
 
         if event_type == "ComplianceCheckCompleted":
             verdict = str(payload.get("overall_verdict", "")).upper()
+            self.compliance_verdict = verdict
             if verdict == "BLOCKED":
                 self.state = ApplicationState.DECLINED_COMPLIANCE
             else:
@@ -133,6 +137,19 @@ class LoanApplicationAggregate:
 
         if event_type == "DecisionGenerated":
             recommendation = str(payload.get("recommendation", "")).upper()
+            confidence_raw = payload.get("confidence")
+            confidence = float(confidence_raw) if confidence_raw is not None else None
+
+            # Regulatory floor: low-confidence decisions must route to REFER.
+            if confidence is not None and confidence < 0.60 and recommendation != "REFER":
+                raise ValueError("DecisionGenerated with confidence < 0.60 must use REFER recommendation")
+
+            # Compliance block is a hard constraint on downstream decisioning.
+            if self.compliance_verdict == "BLOCKED" and recommendation != "DECLINE":
+                raise ValueError("Compliance BLOCKED only allows DECLINE recommendation")
+
+            self.decision_recommendation = recommendation
+            self.decision_confidence = confidence
             if recommendation == "REFER":
                 self.state = ApplicationState.REFERRED
             else:
@@ -154,6 +171,8 @@ class LoanApplicationAggregate:
             return
 
         if event_type == "ApplicationApproved":
+            if self.compliance_verdict in (None, "", "BLOCKED"):
+                raise ValueError("ApplicationApproved requires completed non-blocked compliance")
             self.state = ApplicationState.APPROVED
             return
 

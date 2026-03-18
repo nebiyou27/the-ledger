@@ -3,6 +3,7 @@ import pytest
 from ledger.domain.aggregates.agent_session import AgentSessionAggregate, AgentSessionState
 from ledger.domain.aggregates.audit_ledger import AuditLedgerAggregate
 from ledger.domain.aggregates.compliance_record import ComplianceRecordAggregate
+from ledger.domain.aggregates.loan_application import LoanApplicationAggregate
 
 
 def _ev(event_type: str, payload: dict | None = None, pos: int | None = None):
@@ -99,3 +100,43 @@ def test_audit_chain_mismatch_detected():
 
     assert agg.chain_valid is False
     assert agg.tamper_detected is True
+
+
+def test_loan_decision_confidence_floor_requires_refer():
+    agg = LoanApplicationAggregate(application_id="APEX-1")
+    agg.apply(_ev("ApplicationSubmitted", {"applicant_id": "COMP-1", "requested_amount_usd": 1000, "loan_purpose": "working_capital"}))
+    agg.apply(_ev("DocumentUploadRequested", {}))
+    agg.apply(_ev("DocumentUploaded", {}))
+    agg.apply(_ev("CreditAnalysisRequested", {}))
+    agg.apply(_ev("CreditAnalysisCompleted", {}))
+    agg.apply(_ev("FraudScreeningRequested", {}))
+    agg.apply(_ev("FraudScreeningCompleted", {}))
+    agg.apply(_ev("ComplianceCheckRequested", {}))
+    agg.apply(_ev("ComplianceCheckCompleted", {"overall_verdict": "CLEAR"}))
+
+    with pytest.raises(ValueError):
+        agg.apply(_ev("DecisionGenerated", {"recommendation": "APPROVE", "confidence": 0.45}))
+
+
+def test_loan_blocked_compliance_only_allows_decline_recommendation():
+    agg = LoanApplicationAggregate(application_id="APEX-1")
+    agg.apply(_ev("ApplicationSubmitted", {"applicant_id": "COMP-1", "requested_amount_usd": 1000, "loan_purpose": "working_capital"}))
+    agg.apply(_ev("DocumentUploadRequested", {}))
+    agg.apply(_ev("DocumentUploaded", {}))
+    agg.apply(_ev("CreditAnalysisRequested", {}))
+    agg.apply(_ev("CreditAnalysisCompleted", {}))
+    agg.apply(_ev("FraudScreeningRequested", {}))
+    agg.apply(_ev("FraudScreeningCompleted", {}))
+    agg.apply(_ev("ComplianceCheckRequested", {}))
+    agg.apply(_ev("ComplianceCheckCompleted", {"overall_verdict": "BLOCKED"}))
+
+    with pytest.raises(ValueError):
+        agg.apply(_ev("DecisionGenerated", {"recommendation": "APPROVE", "confidence": 0.9}))
+
+
+def test_loan_approval_requires_non_blocked_compliance():
+    agg = LoanApplicationAggregate(application_id="APEX-1")
+    agg.apply(_ev("ApplicationSubmitted", {"applicant_id": "COMP-1", "requested_amount_usd": 1000, "loan_purpose": "working_capital"}))
+
+    with pytest.raises(ValueError):
+        agg.apply(_ev("ApplicationApproved", {"approved_amount_usd": 1000}))
