@@ -1,9 +1,9 @@
-# The Ledger Starter
+# The Ledger
 
-Professional starter for a multi-agent, event-sourced credit decision system.  
-This repository is designed as a phased implementation track with test gates for each milestone.
+Event-sourced multi-agent credit decision system for the Week 5 challenge.  
+This repository is implemented as a phased delivery track with test gates for each milestone.
 
-## What This Starter Includes
+## What This Repository Includes
 
 - Event schema and validator for ledger domain events
 - Synthetic data generation pipeline (documents + seed events)
@@ -15,7 +15,7 @@ This repository is designed as a phased implementation track with test gates for
   - Projections and upcasters
   - MCP integration
 
-Reference design notes for Phase 1 are in `DESIGN.md`.
+Reference design notes are in `DESIGN.md`.
 
 ## Architecture Snapshot
 
@@ -26,7 +26,7 @@ The system follows event sourcing patterns:
 - `projection_checkpoints` supports resumable projections
 - `outbox` enables reliable publication in the same transaction as event writes
 
-Stream position convention in this starter is **0-based**:
+Stream position convention in this repository is **0-based**:
 
 - new stream version: `-1`
 - first event position: `0`
@@ -114,17 +114,6 @@ pytest tests/test_concurrency.py -v
   sql/              # Database schema and setup
   tests/            # Phase-based gates
 ```
-
-## Sunday Interim Deliverables
-
-- SQL schema: `src/schema.sql`
-- Event store class: `src/event_store.py`
-- Event models + exceptions: `src/models/events.py`
-- Loan aggregate: `src/aggregates/loan_application.py`
-- Agent session aggregate: `src/aggregates/agent_session.py`
-- Command handlers: `src/commands/handlers.py`
-- Concurrency test: `tests/test_concurrency.py`
-- Locked dependencies: `pyproject.toml` (use `uv sync`)
 
 ## Environment Variables
 
