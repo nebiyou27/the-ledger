@@ -508,21 +508,10 @@ class InMemoryEventStore:
 
 def _default_upcaster_registry() -> UpcasterRegistry:
     """Default read-time migrations registered for event schema evolution."""
-    registry = UpcasterRegistry()
+    # Import lazily to avoid circular imports at module import time.
+    from ledger.upcasting.upcasters import build_default_upcaster_registry
 
-    @registry.upcaster("CreditAnalysisCompleted", from_version=1, to_version=2)
-    def _credit_v1_to_v2(payload: dict) -> dict:
-        next_payload = dict(payload or {})
-        next_payload.setdefault("regulatory_basis", [])
-        return next_payload
-
-    @registry.upcaster("DecisionGenerated", from_version=1, to_version=2)
-    def _decision_v1_to_v2(payload: dict) -> dict:
-        next_payload = dict(payload or {})
-        next_payload.setdefault("model_versions", {})
-        return next_payload
-
-    return registry
+    return build_default_upcaster_registry()
 
 
 
