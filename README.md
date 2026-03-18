@@ -92,7 +92,7 @@ pytest tests/test_narratives.py -v
 ## Project Layout
 
 ```text
-starter/
+.
   datagen/          # Synthetic dataset and event generation
   data/             # Generated artifacts
   ledger/           # Core runtime and domain code
