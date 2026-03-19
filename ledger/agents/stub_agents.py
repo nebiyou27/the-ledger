@@ -24,6 +24,7 @@ from uuid import uuid4
 from langgraph.graph import StateGraph, END
 
 from ledger.agents.base_agent import BaseApexAgent
+from ledger.domain.compliance_rules import REGULATIONS, RULE_SET_VERSION
 
 
 # ─── DOCUMENT PROCESSING AGENT ───────────────────────────────────────────────
@@ -274,67 +275,7 @@ class ComplianceState(TypedDict):
     next_agent: str | None
 
 
-# Regulation definitions — deterministic, no LLM in decision path
-REGULATIONS = {
-    "REG-001": {
-        "name": "Bank Secrecy Act (BSA) Check",
-        "version": "2026-Q1-v1",
-        "is_hard_block": False,
-        "check": lambda co: not any(
-            f.get("flag_type") == "AML_WATCH" and f.get("is_active")
-            for f in co.get("compliance_flags", [])
-        ),
-        "failure_reason": "Active AML Watch flag present. Remediation required.",
-        "remediation": "Provide enhanced due diligence documentation within 10 business days.",
-    },
-    "REG-002": {
-        "name": "OFAC Sanctions Screening",
-        "version": "2026-Q1-v1",
-        "is_hard_block": True,
-        "check": lambda co: not any(
-            f.get("flag_type") == "SANCTIONS_REVIEW" and f.get("is_active")
-            for f in co.get("compliance_flags", [])
-        ),
-        "failure_reason": "Active OFAC Sanctions Review. Application blocked.",
-        "remediation": None,
-    },
-    "REG-003": {
-        "name": "Jurisdiction Lending Eligibility",
-        "version": "2026-Q1-v1",
-        "is_hard_block": True,
-        "check": lambda co: co.get("jurisdiction") != "MT",
-        "failure_reason": "Jurisdiction MT not approved for commercial lending at this time.",
-        "remediation": None,
-    },
-    "REG-004": {
-        "name": "Legal Entity Type Eligibility",
-        "version": "2026-Q1-v1",
-        "is_hard_block": False,
-        "check": lambda co: not (
-            co.get("legal_type") == "Sole Proprietor"
-            and (co.get("requested_amount_usd", 0) or 0) > 250_000
-        ),
-        "failure_reason": "Sole Proprietor loans >$250K require additional documentation.",
-        "remediation": "Submit SBA Form 912 and personal financial statement.",
-    },
-    "REG-005": {
-        "name": "Minimum Operating History",
-        "version": "2026-Q1-v1",
-        "is_hard_block": True,
-        "check": lambda co: (2024 - (co.get("founded_year") or 2024)) >= 2,
-        "failure_reason": "Business must have at least 2 years of operating history.",
-        "remediation": None,
-    },
-    "REG-006": {
-        "name": "CRA Community Reinvestment",
-        "version": "2026-Q1-v1",
-        "is_hard_block": False,
-        "check": lambda co: True,   # Always noted, never fails
-        "note_type": "CRA_CONSIDERATION",
-        "note_text": "Jurisdiction qualifies for Community Reinvestment Act consideration.",
-    },
-}
-
+# Regulation definitions have been moved to ledger.domain.compliance_rules
 
 class ComplianceAgent(BaseApexAgent):
     """
@@ -428,12 +369,12 @@ class ComplianceAgent(BaseApexAgent):
         3. passes = reg["check"](co)
         4. evidence_hash = self._sha(f"{rule_id}-{co['company_id']}-{passes}")
         5. If REG-006 (always noted):
-               append ComplianceRuleNoted to "compliance-{app_id}" stream
+               append ComplianceRuleNoted(..., regulation_set_version=RULE_SET_VERSION) to "compliance-{app_id}" stream
         6. Elif passes:
                append ComplianceRulePassed
         7. Else:
                append ComplianceRuleFailed
-               if reg["is_hard_block"]: state["has_hard_block"]=True, state["block_rule_id"]=rule_id
+               if reg.is_hard_block: state["has_hard_block"]=True, state["block_rule_id"]=rule_id
         8. await self._record_node_execution(f"evaluate_{rule_id.lower().replace('-','_')}", ...)
         """
         raise NotImplementedError(f"Implement _evaluate_rule for {rule_id}")
@@ -483,9 +424,9 @@ class DecisionOrchestratorAgent(BaseApexAgent):
 
     HARD CONSTRAINTS (Python, not LLM — applied in apply_hard_constraints node):
         1. compliance BLOCKED → recommendation = DECLINE (cannot override)
-        2. confidence < 0.60 → recommendation = REFER
-        3. fraud_score > 0.60 → recommendation = REFER
-        4. risk_tier == HIGH and confidence < 0.70 → recommendation = REFER
+        2. confidence < 0.60 → recommendation = REFER (triggers HumanReviewRequested)
+        3. fraud_score > 0.60 → recommendation = REFER (triggers HumanReviewRequested)
+        4. risk_tier == HIGH and confidence < 0.70 → recommendation = REFER (triggers HumanReviewRequested)
 
     LLM in synthesize_decision:
         System: "You are a senior loan officer synthesising multi-agent analysis.
