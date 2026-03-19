@@ -10,7 +10,7 @@ import asyncio, hashlib, json, time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from uuid import uuid4
-from anthropic import AsyncAnthropic
+from ledger.agents.llm_adapter import LLMClient, OllamaClient
 from langgraph.graph import StateGraph, END
 from ledger.domain.aggregates.agent_session import AgentSessionAggregate
 
@@ -29,9 +29,10 @@ class BaseApexAgent(ABC):
     Each tool/registry call must call self._record_tool_call().
     The write_output node must call self._record_output_written() then self._record_node_execution().
     """
-    def __init__(self, agent_id: str, agent_type: str, store, registry, client: AsyncAnthropic, model="claude-sonnet-4-20250514"):
+    def __init__(self, agent_id: str, agent_type: str, store, registry, llm: LLMClient | None = None, model="deepseek-r1:8b", client=None):
         self.agent_id = agent_id; self.agent_type = agent_type
-        self.store = store; self.registry = registry; self.client = client; self.model = model
+        self.store = store; self.registry = registry
+        self.llm = llm or OllamaClient(model=model); self.model = model
         self.session_id = None; self.application_id = None
         self._session_stream = None; self._t0 = None
         self._seq = 0; self._llm_calls = 0; self._tokens = 0; self._cost = 0.0
@@ -125,10 +126,7 @@ class BaseApexAgent(ABC):
                 raise
 
     async def _call_llm(self, system, user, max_tokens=1024):
-        resp = await self.client.messages.create(model=self.model, max_tokens=max_tokens,
-            system=system, messages=[{"role":"user","content":user}])
-        t = resp.content[0].text; i = resp.usage.input_tokens; o = resp.usage.output_tokens
-        return t, i, o, round(i/1e6*3.0 + o/1e6*15.0, 6)
+        return await self.llm.generate(system=system, user=user, max_tokens=max_tokens)
 
     @staticmethod
     def _sha(d): return hashlib.sha256(json.dumps(str(d),sort_keys=True).encode()).hexdigest()[:16]
