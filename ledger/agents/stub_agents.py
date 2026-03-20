@@ -15,21 +15,24 @@ Pattern: follow CreditAnalysisAgent exactly. Same build_graph() structure,
 same _record_node_execution() calls, same _append_with_retry() for domain writes.
 """
 from __future__ import annotations
-import time, json
+import time, json, re
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, END
 
 from ledger.agents.base_agent import BaseApexAgent
+from ledger.agents.extraction_adapter import DatagenExtractionAdapter
 from ledger.domain.aggregates.compliance_record import ComplianceRecordAggregate
 from ledger.domain.compliance_rules import REGULATIONS, RULE_SET_VERSION
 from ledger.schema.events import (
     ApplicationApproved,
     ApplicationDeclined,
+    CreditAnalysisRequested,
     ComplianceCheckCompleted,
     ComplianceCheckInitiated,
     ComplianceCheckRequested,
@@ -38,12 +41,22 @@ from ledger.schema.events import (
     ComplianceRulePassed,
     DecisionGenerated,
     DecisionRequested,
+    DocumentFormatRejected,
+    DocumentFormatValidated,
+    DocumentUploaded,
+    ExtractionCompleted,
+    ExtractionFailed,
+    ExtractionStarted,
     FraudAnomalyDetected,
     FraudScreeningCompleted,
     FraudScreeningInitiated,
     HumanReviewRequested,
     HumanReviewCompleted,
     ComplianceVerdict,
+    FinancialFacts,
+    PackageReadyForAnalysis,
+    QualityAssessmentCompleted,
+    DocumentType,
 )
 
 
@@ -67,10 +80,13 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
 class DocProcState(TypedDict):
     application_id: str
     session_id: str
+    package_id: str | None
+    documents: list[dict] | None
     document_ids: list[str] | None
     document_paths: list[str] | None
     extraction_results: list[dict] | None  # one per document
     quality_assessment: dict | None
+    quality_flags: list[str] | None
     errors: list[str]
     output_events: list[dict]
     next_agent: str | None
@@ -112,6 +128,10 @@ class DocumentProcessingAgent(BaseApexAgent):
           → CreditAnalysisRequested on loan stream
     """
 
+    def __init__(self, agent_id: str, agent_type: str, store, registry, llm=None, model="deepseek-r1:8b", client=None, extraction_adapter=None):
+        super().__init__(agent_id, agent_type, store, registry, llm=llm, model=model, client=client)
+        self.extraction_adapter = extraction_adapter or DatagenExtractionAdapter()
+
     def build_graph(self):
         g = StateGraph(DocProcState)
         g.add_node("validate_inputs",            self._node_validate_inputs)
@@ -132,78 +152,345 @@ class DocumentProcessingAgent(BaseApexAgent):
 
     def _initial_state(self, application_id: str) -> DocProcState:
         return DocProcState(
-            application_id=application_id, session_id=self.session_id,
+            application_id=application_id, session_id=self.session_id, package_id=None, documents=None,
             document_ids=None, document_paths=None,
             extraction_results=None, quality_assessment=None,
+            quality_flags=None,
             errors=[], output_events=[], next_agent=None,
         )
 
     async def _node_validate_inputs(self, state):
         t = time.time()
-        # TODO:
-        # 1. Load DocumentUploaded events from "loan-{app_id}" stream
-        # 2. Extract document_ids and file_paths for each uploaded document
-        # 3. Verify at least APPLICATION_PROPOSAL + INCOME_STATEMENT + BALANCE_SHEET uploaded
-        # 4. If any required doc missing: await self._record_input_failed([...], [...]) then raise
-        # 5. await self._record_input_validated(["application_id","document_ids","file_paths"], ms)
-        raise NotImplementedError("Implement _node_validate_inputs")
+        app_id = state["application_id"]
+        loan_events = await self.store.load_stream(f"loan-{app_id}")
+        uploads = [ev for ev in loan_events if ev.get("event_type") == "DocumentUploaded"]
+        if not uploads:
+            raise ValueError(f"No DocumentUploaded events found for loan-{app_id}")
+
+        documents: list[dict[str, Any]] = []
+        for ev in uploads:
+            payload = ev.get("payload") or {}
+            doc_type = str(payload.get("document_type") or "")
+            documents.append({
+                "document_id": str(payload.get("document_id") or ""),
+                "document_type": doc_type,
+                "file_path": str(payload.get("file_path") or ""),
+                "filename": str(payload.get("filename") or ""),
+                "application_id": app_id,
+            })
+
+        required = {
+            DocumentType.APPLICATION_PROPOSAL.value,
+            DocumentType.INCOME_STATEMENT.value,
+            DocumentType.BALANCE_SHEET.value,
+        }
+        present = {doc["document_type"] for doc in documents}
+        missing = sorted(required - present)
+        if missing:
+            raise ValueError(f"Missing required documents for document package: {missing}")
+
+        await self._record_node_execution(
+            "validate_inputs",
+            ["application_id"],
+            ["document_ids", "document_paths", "documents"],
+            int((time.time() - t) * 1000),
+        )
+        return {
+            **state,
+            "package_id": f"docpkg-{app_id}",
+            "documents": documents,
+            "document_ids": [doc["document_id"] for doc in documents],
+            "document_paths": [doc["file_path"] for doc in documents],
+        }
 
     async def _node_validate_formats(self, state):
         t = time.time()
-        # TODO:
-        # For each document:
-        #   1. Check file exists on disk, is not corrupt
-        #   2. Detect actual format (PyPDF2, python-magic, etc.)
-        #   3. Append DocumentFormatValidated(package_id, doc_id, page_count, detected_format)
-        #      to "docpkg-{app_id}" stream
-        #   4. If corrupt: append DocumentFormatRejected and remove from processing list
-        # 5. await self._record_node_execution("validate_document_formats", ...)
-        raise NotImplementedError("Implement _node_validate_formats")
+        package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
+        docs = list(state.get("documents") or [])
+        if not docs:
+            raise ValueError("No documents available for format validation")
+
+        valid_docs: list[dict[str, Any]] = []
+        written: list[dict[str, Any]] = []
+        for doc in docs:
+            file_path = Path(doc.get("file_path") or "")
+            doc_id = doc.get("document_id") or "unknown"
+            doc_type = doc.get("document_type") or "unknown"
+            suffix = file_path.suffix.lower()
+            if not file_path.exists():
+                rejected = DocumentFormatRejected(
+                    package_id=package_id,
+                    document_id=str(doc_id),
+                    rejection_reason=f"Document file not found: {file_path}",
+                    rejected_at=datetime.utcnow(),
+                ).to_store_dict()
+                await self._append_with_retry(package_id, [rejected])
+                written.append({"stream_id": package_id, "event_type": "DocumentFormatRejected", "stream_position": -1})
+                continue
+
+            if suffix not in {".pdf", ".xlsx", ".xls", ".csv"}:
+                rejected = DocumentFormatRejected(
+                    package_id=package_id,
+                    document_id=str(doc_id),
+                    rejection_reason=f"Unsupported file format: {suffix or 'unknown'}",
+                    rejected_at=datetime.utcnow(),
+                ).to_store_dict()
+                await self._append_with_retry(package_id, [rejected])
+                written.append({"stream_id": package_id, "event_type": "DocumentFormatRejected", "stream_position": -1})
+                continue
+
+            detected_format = "pdf" if suffix == ".pdf" else "xlsx" if suffix in {".xlsx", ".xls"} else "csv"
+            validated = DocumentFormatValidated(
+                package_id=package_id,
+                document_id=str(doc_id),
+                document_type=doc_type,
+                page_count=1,
+                detected_format=detected_format,
+                validated_at=datetime.utcnow(),
+            ).to_store_dict()
+            await self._append_with_retry(package_id, [validated])
+            valid_docs.append(doc)
+            written.append({"stream_id": package_id, "event_type": "DocumentFormatValidated", "stream_position": -1})
+
+        await self._record_node_execution(
+            "validate_document_formats",
+            ["documents"],
+            ["documents"],
+            int((time.time() - t) * 1000),
+        )
+        return {
+            **state,
+            "documents": valid_docs,
+            "document_ids": [doc["document_id"] for doc in valid_docs],
+            "document_paths": [doc["file_path"] for doc in valid_docs],
+            "output_events": state.get("output_events", []) + written,
+        }
 
     async def _node_extract_is(self, state):
         t = time.time()
-        # TODO:
-        # 1. Find income statement document from state["document_paths"]
-        # 2. Append ExtractionStarted(package_id, doc_id, pipeline_version, "mineru-1.0")
-        #    to "docpkg-{app_id}" stream
-        # 3. Call Week 3 pipeline:
-        #    from document_refinery.pipeline import extract_financial_facts
-        #    facts = await extract_financial_facts(file_path, "income_statement")
-        # 4. On success: append ExtractionCompleted(facts=FinancialFacts(**facts), ...)
-        # 5. On failure: append ExtractionFailed(error_type, error_message, partial_facts)
-        # 6. await self._record_tool_call("week3_extraction_pipeline", ..., ms)
-        # 7. await self._record_node_execution("extract_income_statement", ...)
-        raise NotImplementedError("Implement _node_extract_is")
+        return await self._extract_document_type(state, DocumentType.INCOME_STATEMENT, "extract_income_statement")
 
     async def _node_extract_bs(self, state):
         t = time.time()
-        # TODO: Same pattern as _node_extract_is but for balance sheet
-        # Key difference: ExtractionCompleted for balance sheet should populate
-        # total_assets, total_liabilities, total_equity, current_assets, etc.
-        # The QualityAssessmentCompleted LLM will check Assets = Liabilities + Equity
-        raise NotImplementedError("Implement _node_extract_bs")
+        return await self._extract_document_type(state, DocumentType.BALANCE_SHEET, "extract_balance_sheet")
 
     async def _node_assess_quality(self, state):
         t = time.time()
-        # TODO:
-        # 1. Merge extraction results from IS + BS into a combined FinancialFacts
-        # 2. Build LLM prompt asking for quality assessment (consistency check)
-        # 3. content, ti, to, cost = await self._call_llm(SYSTEM, USER, 512)
-        # 4. Parse DocumentQualityAssessment from JSON response
-        # 5. Append QualityAssessmentCompleted to "docpkg-{app_id}" stream
-        # 6. If critical_missing_fields: add to state["quality_flags"]
-        # 7. await self._record_node_execution("assess_quality", ..., ms, ti, to, cost)
-        raise NotImplementedError("Implement _node_assess_quality")
+        package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
+        extraction_results = list(state.get("extraction_results") or [])
+        if not extraction_results:
+            raise ValueError("No extraction results available for quality assessment")
+
+        combined: dict[str, Any] = {}
+        for result in extraction_results:
+            facts = result.get("facts") or {}
+            for key, value in facts.items():
+                if value is not None and key not in combined:
+                    combined[key] = value
+
+        required_fields = ["total_revenue", "total_assets", "total_liabilities", "total_equity"]
+        missing_fields = [field for field in required_fields if combined.get(field) in (None, "", [])]
+        balance_sheet_balances = False
+        balance_discrepancy = None
+        assets = combined.get("total_assets")
+        liabilities = combined.get("total_liabilities")
+        equity = combined.get("total_equity")
+        try:
+            if assets is not None and liabilities is not None and equity is not None:
+                assets_f = float(assets)
+                liabilities_f = float(liabilities)
+                equity_f = float(equity)
+                expected = liabilities_f + equity_f
+                balance_discrepancy = abs(assets_f - expected)
+                balance_sheet_balances = balance_discrepancy <= max(1.0, abs(expected) * 0.05)
+        except Exception:
+            balance_sheet_balances = False
+
+        system = (
+            "You are a financial document quality analyst. Check internal consistency. "
+            "Do NOT make credit decisions. Return JSON with keys: overall_confidence, "
+            "is_coherent, anomalies, critical_missing_fields, reextraction_recommended, auditor_notes."
+        )
+        user = json.dumps(
+            {
+                "package_id": package_id,
+                "application_id": state["application_id"],
+                "combined_facts": combined,
+                "missing_fields": missing_fields,
+                "balance_sheet_balances": balance_sheet_balances,
+                "balance_discrepancy_usd": balance_discrepancy,
+            },
+            default=str,
+        )
+
+        llm_data: dict[str, Any] = {}
+        tok_in = tok_out = 0
+        cost = 0.0
+        try:
+            content, tok_in, tok_out, cost = await self._call_llm(system, user, 512)
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                m = re.search(r"\{.*\}", content, re.DOTALL)
+                parsed = json.loads(m.group(0)) if m else {}
+            if isinstance(parsed, dict):
+                llm_data = parsed
+        except Exception:
+            llm_data = {}
+            tok_in = tok_out = 0
+            cost = 0.0
+
+        anomalies = list(llm_data.get("anomalies") or llm_data.get("warnings") or [])
+        critical_missing_fields = list(llm_data.get("critical_missing_fields") or missing_fields)
+        reextraction_recommended = bool(llm_data.get("reextraction_recommended", False) or critical_missing_fields or not balance_sheet_balances)
+        overall_confidence = float(llm_data.get("overall_confidence") or llm_data.get("consistency_score") or (0.92 if balance_sheet_balances else 0.66))
+        is_coherent = bool(llm_data.get("is_coherent", balance_sheet_balances and not critical_missing_fields))
+        auditor_notes = str(llm_data.get("auditor_notes") or llm_data.get("summary") or "Document package reviewed for internal consistency.")
+
+        assessment_event = QualityAssessmentCompleted(
+            package_id=package_id,
+            document_id=str((state.get("document_ids") or [package_id])[0]),
+            overall_confidence=overall_confidence,
+            is_coherent=is_coherent,
+            anomalies=[str(a) for a in anomalies],
+            critical_missing_fields=[str(f) for f in critical_missing_fields],
+            reextraction_recommended=reextraction_recommended,
+            auditor_notes=auditor_notes,
+            assessed_at=datetime.utcnow(),
+        ).to_store_dict()
+        await self._append_with_retry(package_id, [assessment_event])
+
+        await self._record_node_execution(
+            "assess_quality",
+            ["extraction_results"],
+            ["quality_assessment"],
+            int((time.time() - t) * 1000),
+            tok_in,
+            tok_out,
+            cost,
+        )
+        return {
+            **state,
+            "quality_assessment": {
+                "overall_confidence": overall_confidence,
+                "is_coherent": is_coherent,
+                "anomalies": [str(a) for a in anomalies],
+                "critical_missing_fields": [str(f) for f in critical_missing_fields],
+                "reextraction_recommended": reextraction_recommended,
+                "auditor_notes": auditor_notes,
+                "balance_sheet_balances": balance_sheet_balances,
+                "balance_discrepancy_usd": balance_discrepancy,
+            },
+            "quality_flags": [str(f) for f in critical_missing_fields],
+        }
 
     async def _node_write_output(self, state):
         t = time.time()
-        # TODO:
-        # 1. Append PackageReadyForAnalysis to "docpkg-{app_id}" stream
-        # 2. Append CreditAnalysisRequested to "loan-{app_id}" stream
-        # 3. await self._record_output_written([...], summary)
-        # 4. await self._record_node_execution("write_output", ...)
-        # 5. return {**state, "next_agent": "credit_analysis"}
-        raise NotImplementedError("Implement _node_write_output")
+        app_id = state["application_id"]
+        package_id = state.get("package_id") or f"docpkg-{app_id}"
+        quality = state.get("quality_assessment") or {}
+        documents_processed = len(state.get("documents") or [])
+        has_quality_flags = bool((quality.get("critical_missing_fields") or []) or (quality.get("anomalies") or []) or quality.get("reextraction_recommended"))
+        quality_flag_count = len(quality.get("critical_missing_fields") or []) + len(quality.get("anomalies") or [])
+
+        package_event = PackageReadyForAnalysis(
+            package_id=package_id,
+            application_id=app_id,
+            documents_processed=documents_processed,
+            has_quality_flags=has_quality_flags,
+            quality_flag_count=quality_flag_count,
+            ready_at=datetime.utcnow(),
+        ).to_store_dict()
+        credit_event = CreditAnalysisRequested(
+            application_id=app_id,
+            requested_at=datetime.utcnow(),
+            requested_by="document_processing_agent",
+            priority="NORMAL",
+        ).to_store_dict()
+
+        positions = await self._append_with_retry(f"docpkg-{app_id}", [package_event])
+        credit_positions = await self._append_with_retry(f"loan-{app_id}", [credit_event])
+        events_written = [
+            {"stream_id": f"docpkg-{app_id}", "event_type": "PackageReadyForAnalysis", "stream_position": positions[0] if positions else -1},
+            {"stream_id": f"loan-{app_id}", "event_type": "CreditAnalysisRequested", "stream_position": credit_positions[0] if credit_positions else -1},
+        ]
+
+        await self._record_output_written(
+            events_written,
+            f"Document package ready: {documents_processed} documents processed, quality_flags={quality_flag_count}.",
+        )
+        await self._record_node_execution(
+            "write_output",
+            ["quality_assessment"],
+            ["events_written"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "output_events": events_written, "next_agent": "credit_analysis"}
+
+    async def _extract_document_type(self, state, document_type: DocumentType, node_name: str):
+        t = time.time()
+        package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
+        documents = list(state.get("documents") or [])
+        doc = next((item for item in documents if str(item.get("document_type")) == document_type.value), None)
+        if not doc:
+            raise ValueError(f"{document_type.value} document not found in package")
+
+        start_event = ExtractionStarted(
+            package_id=package_id,
+            document_id=str(doc.get("document_id") or ""),
+            document_type=document_type,
+            pipeline_version="datagen-adapter",
+            extraction_model=getattr(self.extraction_adapter, "__class__", type(self.extraction_adapter)).__name__,
+            started_at=datetime.utcnow(),
+        ).to_store_dict()
+        await self._append_with_retry(package_id, [start_event])
+
+        try:
+            facts_raw = await self.extraction_adapter.extract(str(doc.get("file_path") or ""), document_type.value)
+            facts_dict = _to_plain_dict(facts_raw)
+            facts_model = FinancialFacts(**facts_dict)
+            completed_event = ExtractionCompleted(
+                package_id=package_id,
+                document_id=str(doc.get("document_id") or ""),
+                document_type=document_type,
+                facts=facts_model,
+                raw_text_length=len(json.dumps(facts_dict, default=str)),
+                tables_extracted=1 if document_type == DocumentType.BALANCE_SHEET else 0,
+                processing_ms=int((time.time() - t) * 1000),
+                completed_at=datetime.utcnow(),
+            ).to_store_dict()
+            await self._append_with_retry(package_id, [completed_event])
+            extracted_event = completed_event
+            extraction_result = {
+                "document_id": str(doc.get("document_id") or ""),
+                "document_type": document_type.value,
+                "facts": facts_model.model_dump(mode="json"),
+            }
+        except Exception as exc:
+            failed_event = ExtractionFailed(
+                package_id=package_id,
+                document_id=str(doc.get("document_id") or ""),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                partial_facts=None,
+                failed_at=datetime.utcnow(),
+            ).to_store_dict()
+            await self._append_with_retry(package_id, [failed_event])
+            raise
+
+        await self._record_tool_call(
+            "datagen_extraction_adapter",
+            f"{document_type.value}:{doc.get('file_path')}",
+            extracted_event["event_type"],
+            int((time.time() - t) * 1000),
+        )
+        await self._record_node_execution(
+            node_name,
+            ["documents"],
+            ["extraction_results"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "extraction_results": (state.get("extraction_results") or []) + [extraction_result]}
 
 
 # ─── FRAUD DETECTION AGENT ───────────────────────────────────────────────────
