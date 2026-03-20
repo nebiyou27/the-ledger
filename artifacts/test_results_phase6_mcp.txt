@@ -1,0 +1,8 @@
+pytest tests/test_mcp_server.py -q
+1 passed
+
+Phase 6 MCP smoke:
+- 8 tools registered
+- 6 projection-backed resource queries registered
+- structured tool error returns verified
+- end-to-end lifecycle smoke passed through MCP tools

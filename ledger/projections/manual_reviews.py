@@ -3,6 +3,9 @@ ledger/projections/manual_reviews.py
 ====================================
 Minimal human-in-the-loop projection for tracking pending manual reviews.
 """
+from __future__ import annotations
+
+from copy import deepcopy
 import logging
 from typing import Dict, Any
 
@@ -48,3 +51,6 @@ class ManualReviewsProjection(Projection):
                 self.reviews[app_id]["override_reason"] = payload.get("override_reason")
                 self.reviews[app_id]["reviewed_at"] = payload.get("reviewed_at")
                 logger.info(f"Manual review completed for {app_id} (Override: {payload.get('override')}).")
+
+    def all_rows(self) -> list[dict[str, Any]]:
+        return [deepcopy(review) for review in self.reviews.values()]

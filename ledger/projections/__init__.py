@@ -3,6 +3,8 @@ from .application_summary import ApplicationSummaryProjection
 from .base import Projection, ProjectionLag
 from .compliance_audit import ComplianceAuditProjection
 from .daemon import ProjectionDaemon
+from .manual_reviews import ManualReviewsProjection
+from .what_if import WhatIfProjector
 
 __all__ = [
     "Projection",
@@ -11,4 +13,6 @@ __all__ = [
     "ApplicationSummaryProjection",
     "AgentPerformanceProjection",
     "ComplianceAuditProjection",
+    "ManualReviewsProjection",
+    "WhatIfProjector",
 ]

@@ -1,0 +1,65 @@
+NARR-05 demo smoke
+===================
+Application: NARR-05
+Package written: artifacts\regulatory_package_NARR05.json
+Final decision: APPROVED
+Decision recommendation: DECLINE
+Human override used: True
+Approved amount: $750,000
+Conditions count: 2
+
+What-if result:
+{
+  "actual": {
+    "final_decision": "APPROVED",
+    "approved_amount_usd": 750000.0,
+    "override_used": true,
+    "reviewer_id": "LO-Sarah-Chen",
+    "loan_state": "COMPLIANCE_COMPLETE",
+    "last_event_type": "ComplianceCheckCompleted",
+    "final_decision_at": "2026-03-20T10:20:30+00:00"
+  },
+  "counterfactuals": [
+    {
+      "name": "no_human_override",
+      "assumption": "If the reviewer had not overridden the decline, the loan would have been declined.",
+      "final_decision": "DECLINED",
+      "approved_amount_usd": 0.0,
+      "decision_recommendation": "DECLINE",
+      "capital_preserved_usd": 750000.0
+    },
+    {
+      "name": "decline_followed_by_manual_hard_stop",
+      "assumption": "If compliance or reviewer intervention had not changed the recommendation, the application would remain closed.",
+      "final_decision": "DECLINED",
+      "approved_amount_usd": 0.0,
+      "decision_recommendation": "DECLINE",
+      "capital_preserved_usd": 750000.0
+    }
+  ],
+  "underwriting": {
+    "application_id": "NARR-05",
+    "requested_amount_usd": 750000.0,
+    "approved_amount_usd": 750000.0,
+    "approval_ratio": 1.0,
+    "decision_recommendation": "DECLINE",
+    "confidence": 0.64,
+    "human_override_used": true,
+    "reviewer_id": "LO-Sarah-Chen",
+    "conditions": [
+      "Quarterly covenant reporting",
+      "Maintain minimum cash balance above 300000 USD"
+    ],
+    "conditions_count": 2,
+    "interest_rate_pct": 11.25,
+    "term_months": 48,
+    "effective_date": "2026-03-20",
+    "compliance_verdict": "CLEAR",
+    "risk_tier": "LOW",
+    "fraud_score": 0.14
+  },
+  "narrative": "COMP-007 moved through credit, fraud, and compliance review with compliance verdict CLEAR. The orchestrator's recommendation was DECLINE at 64% confidence. LO-Sarah-Chen overrode that recommendation and the facility was approved for $750,000. Final terms included Quarterly covenant reporting, Maintain minimum cash balance above 300000 USD. Override rationale: Relationship history, strong cash flow, and strategic retention value.."
+}
+
+Underwriting narrative:
+COMP-007 moved through credit, fraud, and compliance review with compliance verdict CLEAR. The orchestrator's recommendation was DECLINE at 64% confidence. LO-Sarah-Chen overrode that recommendation and the facility was approved for $750,000. Final terms included Quarterly covenant reporting, Maintain minimum cash balance above 300000 USD. Override rationale: Relationship history, strong cash flow, and strategic retention value..

@@ -1,0 +1,256 @@
+{
+  "package_type": "regulatory_package",
+  "application_id": "NARR-05",
+  "generated_at": "2026-03-20T11:00:22.453652+00:00",
+  "application_summary": {
+    "application_id": "NARR-05",
+    "state": "COMPLIANCE_COMPLETE",
+    "applicant_id": "COMP-007",
+    "requested_amount_usd": 750000,
+    "approved_amount_usd": 750000,
+    "risk_tier": "LOW",
+    "fraud_score": 0.14,
+    "compliance_status": "CLEAR",
+    "decision": "DECLINE",
+    "agent_sessions_completed": [],
+    "last_event_type": "ComplianceCheckCompleted",
+    "last_event_at": "2026-03-20T09:21:00+00:00",
+    "human_reviewer_id": "LO-Sarah-Chen",
+    "final_decision_at": "2026-03-20T10:20:30+00:00"
+  },
+  "compliance_audit": {
+    "application_id": "NARR-05",
+    "session_id": "sess-compliance-narr05",
+    "regulation_set_version": "2026-Q1",
+    "rules_to_evaluate": [
+      "REG-001",
+      "REG-002",
+      "REG-004"
+    ],
+    "passed_rules": [
+      {
+        "rule_id": "REG-001",
+        "rule_name": "KYC",
+        "rule_version": "1.0",
+        "evidence_hash": "rule-001"
+      },
+      {
+        "rule_id": "REG-002",
+        "rule_name": "AML",
+        "rule_version": "1.0",
+        "evidence_hash": "rule-002"
+      }
+    ],
+    "failed_rules": [],
+    "noted_rules": [],
+    "overall_verdict": "CLEAR",
+    "has_hard_block": false,
+    "last_updated_at": "2026-03-20T09:21:00+00:00"
+  },
+  "agent_performance": [
+    {
+      "agent_id": "credit-agent-01",
+      "model_version": "credit-v5",
+      "analyses_completed": 1,
+      "decisions_generated": 0,
+      "avg_confidence_score": 0.91,
+      "avg_duration_ms": 1480.0,
+      "approve_rate": 0.0,
+      "decline_rate": 0.0,
+      "refer_rate": 0.0,
+      "human_override_rate": 0.0,
+      "first_seen_at": "2026-03-20T09:12:00+00:00",
+      "last_seen_at": "2026-03-20T09:12:00+00:00"
+    },
+    {
+      "agent_id": "orchestrator-agent-01",
+      "model_version": "orchestrator-v1",
+      "analyses_completed": 0,
+      "decisions_generated": 1,
+      "avg_confidence_score": 0.64,
+      "avg_duration_ms": 0.0,
+      "approve_rate": 0.0,
+      "decline_rate": 1.0,
+      "refer_rate": 0.0,
+      "human_override_rate": 0.0,
+      "first_seen_at": "2026-03-20T10:05:00+00:00",
+      "last_seen_at": "2026-03-20T10:05:00+00:00"
+    },
+    {
+      "agent_id": "unknown-agent",
+      "model_version": "unknown-model",
+      "analyses_completed": 0,
+      "decisions_generated": 0,
+      "avg_confidence_score": 0.0,
+      "avg_duration_ms": 0.0,
+      "approve_rate": 0.0,
+      "decline_rate": 0.0,
+      "refer_rate": 0.0,
+      "human_override_rate": 1.0,
+      "first_seen_at": "2026-03-20T10:20:00+00:00",
+      "last_seen_at": "2026-03-20T10:20:00+00:00"
+    }
+  ],
+  "manual_reviews": [],
+  "timeline": [
+    {
+      "stream_id": "loan-NARR-05",
+      "stream_position": 0,
+      "event_type": "ApplicationSubmitted",
+      "recorded_at": "2026-03-20T09:00:00+00:00",
+      "payload": {
+        "application_id": "NARR-05",
+        "applicant_id": "COMP-007",
+        "requested_amount_usd": 750000,
+        "loan_purpose": "expansion",
+        "loan_term_months": 48,
+        "submission_channel": "relationship-manager",
+        "contact_email": "finance@apex-industrial.example",
+        "contact_name": "Apex Industrial Finance",
+        "application_reference": "NARR-05"
+      }
+    },
+    {
+      "stream_id": "loan-NARR-05",
+      "stream_position": 1,
+      "event_type": "DecisionGenerated",
+      "recorded_at": "2026-03-20T10:05:00+00:00",
+      "payload": {
+        "application_id": "NARR-05",
+        "orchestrator_session_id": "sess-orchestrator-narr05",
+        "recommendation": "DECLINE",
+        "confidence": 0.64,
+        "approved_amount_usd": null,
+        "conditions": [],
+        "executive_summary": "The automated decision engine recommends decline because the deal is outside its preferred exposure band, even though the company remains fundamentally healthy.",
+        "key_risks": [
+          "Large requested amount relative to policy appetite"
+        ],
+        "contributing_sessions": [
+          "credit-NARR-05",
+          "fraud-NARR-05",
+          "compliance-NARR-05"
+        ],
+        "model_versions": {
+          "credit": "credit-v5",
+          "fraud": "fraud-v2",
+          "compliance": "compliance-v3",
+          "orchestrator": "orchestrator-v1"
+        },
+        "generated_at": "2026-03-20T10:05:00Z"
+      }
+    },
+    {
+      "stream_id": "loan-NARR-05",
+      "stream_position": 2,
+      "event_type": "HumanReviewCompleted",
+      "recorded_at": "2026-03-20T10:20:00+00:00",
+      "payload": {
+        "application_id": "NARR-05",
+        "reviewer_id": "LO-Sarah-Chen",
+        "override": true,
+        "original_recommendation": "DECLINE",
+        "final_decision": "APPROVE",
+        "override_reason": "Relationship history, strong cash flow, and strategic retention value.",
+        "reviewed_at": "2026-03-20T10:20:00Z"
+      }
+    },
+    {
+      "stream_id": "loan-NARR-05",
+      "stream_position": 3,
+      "event_type": "ApplicationApproved",
+      "recorded_at": "2026-03-20T10:20:30+00:00",
+      "payload": {
+        "application_id": "NARR-05",
+        "approved_amount_usd": 750000,
+        "interest_rate_pct": 11.25,
+        "term_months": 48,
+        "conditions": [
+          "Quarterly covenant reporting",
+          "Maintain minimum cash balance above 300000 USD"
+        ],
+        "approved_by": "LO-Sarah-Chen",
+        "effective_date": "2026-03-20",
+        "approved_at": "2026-03-20T10:20:30Z"
+      }
+    }
+  ],
+  "underwriting": {
+    "requested_amount_usd": 750000,
+    "approved_amount_usd": 750000,
+    "decision_recommendation": "DECLINE",
+    "override_used": true,
+    "reviewer_id": "LO-Sarah-Chen",
+    "approval_terms": {
+      "interest_rate_pct": 11.25,
+      "term_months": 48,
+      "conditions": [
+        "Quarterly covenant reporting",
+        "Maintain minimum cash balance above 300000 USD"
+      ]
+    },
+    "risk_snapshot": {
+      "risk_tier": "LOW",
+      "fraud_score": 0.14,
+      "compliance_verdict": "CLEAR",
+      "state": "COMPLIANCE_COMPLETE"
+    }
+  },
+  "what_if": {
+    "actual": {
+      "final_decision": "APPROVED",
+      "approved_amount_usd": 750000.0,
+      "override_used": true,
+      "reviewer_id": "LO-Sarah-Chen",
+      "loan_state": "COMPLIANCE_COMPLETE",
+      "last_event_type": "ComplianceCheckCompleted",
+      "final_decision_at": "2026-03-20T10:20:30+00:00"
+    },
+    "counterfactuals": [
+      {
+        "name": "no_human_override",
+        "assumption": "If the reviewer had not overridden the decline, the loan would have been declined.",
+        "final_decision": "DECLINED",
+        "approved_amount_usd": 0.0,
+        "decision_recommendation": "DECLINE",
+        "capital_preserved_usd": 750000.0
+      },
+      {
+        "name": "decline_followed_by_manual_hard_stop",
+        "assumption": "If compliance or reviewer intervention had not changed the recommendation, the application would remain closed.",
+        "final_decision": "DECLINED",
+        "approved_amount_usd": 0.0,
+        "decision_recommendation": "DECLINE",
+        "capital_preserved_usd": 750000.0
+      }
+    ],
+    "underwriting": {
+      "application_id": "NARR-05",
+      "requested_amount_usd": 750000.0,
+      "approved_amount_usd": 750000.0,
+      "approval_ratio": 1.0,
+      "decision_recommendation": "DECLINE",
+      "confidence": 0.64,
+      "human_override_used": true,
+      "reviewer_id": "LO-Sarah-Chen",
+      "conditions": [
+        "Quarterly covenant reporting",
+        "Maintain minimum cash balance above 300000 USD"
+      ],
+      "conditions_count": 2,
+      "interest_rate_pct": 11.25,
+      "term_months": 48,
+      "effective_date": "2026-03-20",
+      "compliance_verdict": "CLEAR",
+      "risk_tier": "LOW",
+      "fraud_score": 0.14
+    },
+    "narrative": "COMP-007 moved through credit, fraud, and compliance review with compliance verdict CLEAR. The orchestrator's recommendation was DECLINE at 64% confidence. LO-Sarah-Chen overrode that recommendation and the facility was approved for $750,000. Final terms included Quarterly covenant reporting, Maintain minimum cash balance above 300000 USD. Override rationale: Relationship history, strong cash flow, and strategic retention value.."
+  },
+  "evidence": {
+    "loan_events": 4,
+    "credit_events": 2,
+    "fraud_events": 1,
+    "compliance_events": 4
+  }
+}
