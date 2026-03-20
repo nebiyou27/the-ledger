@@ -24,6 +24,12 @@ def _canonical_event_hash(event: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _hash_event_sequence(events: list[dict[str, Any]], previous_hash: str | None = None) -> str:
+    event_hashes = "".join(_canonical_event_hash(event) for event in events)
+    base = (previous_hash or "") + event_hashes
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class IntegrityCheckResult:
     entity_type: str
@@ -51,13 +57,14 @@ async def run_integrity_check(store, entity_type: str, entity_id: str) -> Integr
         previous_hash = payload.get("integrity_hash")
         previously_verified = int(payload.get("events_verified_count", 0))
 
-    events_to_verify = domain_events[previously_verified:]
-    event_hashes = "".join(_canonical_event_hash(event) for event in events_to_verify)
-    base = (previous_hash or "") + event_hashes
-    integrity_hash = hashlib.sha256(base.encode("utf-8")).hexdigest()
+    verified_prefix = domain_events[:previously_verified]
+    prefix_hash = _hash_event_sequence(verified_prefix) if verified_prefix else None
+    tamper_detected = previous_hash is not None and prefix_hash != previous_hash
+    chain_valid = not tamper_detected
 
-    chain_valid = True
-    tamper_detected = False
+    events_to_verify = domain_events[previously_verified:]
+    base_hash = prefix_hash if tamper_detected and prefix_hash is not None else previous_hash
+    integrity_hash = _hash_event_sequence(events_to_verify, previous_hash=base_hash)
 
     audit_event = AuditIntegrityCheckRun(
         entity_type=entity_type,
