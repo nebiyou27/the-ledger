@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
+from pathlib import Path
 
+from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+load_dotenv()
 from ledger.event_store import EventStore
 
 

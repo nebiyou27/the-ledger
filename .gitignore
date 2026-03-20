@@ -32,6 +32,8 @@ Thumbs.db
 # Optional: final notes or reports
 domain_notes_final.md
 DESIGN.md
+Implementation_notes.md
+task.md
 
 # Optional: artifacts from the challenge
 artifacts/
