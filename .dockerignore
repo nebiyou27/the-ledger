@@ -1,0 +1,13 @@
+.git
+.venv
+.pytest_cache
+__pycache__
+artifacts
+Challenge_documents
+data
+documents
+frontend
+node_modules
+scratch_docx
+*.log
+*.txt

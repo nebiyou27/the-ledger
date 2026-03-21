@@ -34,6 +34,22 @@ Stream position convention in this repository is **0-based**:
 
 ## Quick Start
 
+### One-command demo
+
+If you have Docker installed, the fastest path is:
+
+```bash
+docker compose up --build
+```
+
+That starts:
+
+- PostgreSQL on `localhost:5432`
+- the seeded Python API on `localhost:8000`
+- the frontend on `localhost:3000`
+
+The seed service loads the committed demo registry data and event history so the app is ready to browse right away.
+
 ### 1. Install dependencies
 
 ```bash

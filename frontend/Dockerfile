@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+ARG NEXT_PUBLIC_LEDGER_API_BASE_URL=http://localhost:8000
+ARG NEXT_PUBLIC_LEDGER_API_KEY=dev-viewer-key
+ENV NEXT_PUBLIC_LEDGER_API_BASE_URL=${NEXT_PUBLIC_LEDGER_API_BASE_URL} \
+    NEXT_PUBLIC_LEDGER_API_KEY=${NEXT_PUBLIC_LEDGER_API_KEY} \
+    NODE_ENV=production
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+EXPOSE 3000
+
+CMD ["npm", "run", "start"]

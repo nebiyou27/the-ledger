@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: apex_ledger
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: apex
+    ports:
+      - "5432:5432"
+    volumes:
+      - ledger_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d apex_ledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  seed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "scripts/seed_demo_data.py"]
+    environment:
+      DATABASE_URL: postgresql://postgres:apex@db:5432/apex_ledger
+      APPLICANT_REGISTRY_URL: postgresql://postgres:apex@db:5432/apex_ledger
+      DOCUMENTS_DIR: /app/documents
+      REGULATION_VERSION: 2026-Q1
+      LOG_LEVEL: INFO
+    volumes:
+      - ./data:/app/data:ro
+      - ./documents:/app/documents:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "uvicorn", "ledger.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      DATABASE_URL: postgresql://postgres:apex@db:5432/apex_ledger
+      APPLICANT_REGISTRY_URL: postgresql://postgres:apex@db:5432/apex_ledger
+      DOCUMENTS_DIR: /app/documents
+      REGULATION_VERSION: 2026-Q1
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data:ro
+      - ./documents:/app/documents:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_LEDGER_API_BASE_URL: http://localhost:8000
+        NEXT_PUBLIC_LEDGER_API_KEY: dev-viewer-key
+    environment:
+      NEXT_PUBLIC_LEDGER_API_BASE_URL: http://localhost:8000
+      NEXT_PUBLIC_LEDGER_API_KEY: dev-viewer-key
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  ledger_pgdata:
