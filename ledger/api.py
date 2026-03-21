@@ -219,6 +219,80 @@ def _pretty_risk_tier(risk_tier: str) -> str:
     return mapping.get(str(risk_tier).upper(), str(risk_tier).title())
 
 
+def _rebuild_compliance_state(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    state: dict[str, Any] | None = None
+    for event in events:
+        payload = event.get("payload") or {}
+        etype = str(event.get("event_type"))
+        application_id = str(payload.get("application_id") or "")
+        if not application_id:
+            continue
+
+        if state is None:
+            state = {
+                "application_id": application_id,
+                "session_id": None,
+                "regulation_set_version": None,
+                "rules_to_evaluate": [],
+                "passed_rules": [],
+                "failed_rules": [],
+                "noted_rules": [],
+                "overall_verdict": None,
+                "has_hard_block": False,
+                "last_updated_at": None,
+            }
+
+        if etype == "ComplianceCheckInitiated":
+            state["session_id"] = payload.get("session_id")
+            state["regulation_set_version"] = payload.get("regulation_set_version")
+            state["rules_to_evaluate"] = list(payload.get("rules_to_evaluate") or [])
+        elif etype == "ComplianceRulePassed":
+            state["passed_rules"].append(
+                {
+                    "rule_id": payload.get("rule_id"),
+                    "rule_name": payload.get("rule_name"),
+                    "rule_version": payload.get("rule_version"),
+                    "evidence_hash": payload.get("evidence_hash"),
+                }
+            )
+        elif etype == "ComplianceRuleFailed":
+            failed_rule = {
+                "rule_id": payload.get("rule_id"),
+                "rule_name": payload.get("rule_name"),
+                "rule_version": payload.get("rule_version"),
+                "failure_reason": payload.get("failure_reason"),
+                "is_hard_block": bool(payload.get("is_hard_block", False)),
+            }
+            state["failed_rules"].append(failed_rule)
+            if failed_rule["is_hard_block"]:
+                state["has_hard_block"] = True
+        elif etype == "ComplianceRuleNoted":
+            state["noted_rules"].append(
+                {
+                    "rule_id": payload.get("rule_id"),
+                    "rule_name": payload.get("rule_name"),
+                    "note_type": payload.get("note_type"),
+                    "note_text": payload.get("note_text"),
+                }
+            )
+        elif etype == "ComplianceCheckCompleted":
+            state["overall_verdict"] = payload.get("overall_verdict")
+            state["has_hard_block"] = bool(payload.get("has_hard_block", state["has_hard_block"]))
+
+        state["last_updated_at"] = event.get("recorded_at")
+
+    return state
+
+
+async def _compliance_state_with_fallback(self: Backend, application_id: str) -> dict[str, Any] | None:
+    state = self.runtime.compliance_audit.get_current_compliance(application_id)
+    if state is not None:
+        return state
+
+    events = await self.store.load_stream(f"compliance-{application_id}")
+    return _rebuild_compliance_state(events)
+
+
 def _loan_type_label(value: Any) -> str:
     mapping = {
         "working_capital": "Working Capital",
@@ -261,7 +335,7 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
     loan_events = await self.store.load_stream(f"loan-{application_id}")
     credit_events = await self.store.load_stream(f"credit-{application_id}")
     fraud_events = await self.store.load_stream(f"fraud-{application_id}")
-    compliance_state = self.runtime.compliance_audit.get_current_compliance(application_id)
+    compliance_state = await _compliance_state_with_fallback(self, application_id)
     manual_review = _manual_review_for(self.runtime, application_id)
 
     submitted = _last_event(loan_events, "ApplicationSubmitted")
@@ -375,7 +449,19 @@ async def _backend_list_review_queue(self: Backend) -> list[dict[str, Any]]:
 
 async def _backend_list_compliance_rows(self: Backend) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for state in self.runtime.compliance_audit._current.values():
+    states = list(self.runtime.compliance_audit._current.values())
+    if not states:
+        seen: set[str] = set()
+        async for event in self.store.load_all(from_position=0, event_types=["ComplianceCheckCompleted"]):
+            app_id = str((event.get("payload") or {}).get("application_id") or "")
+            if app_id:
+                seen.add(app_id)
+        for app_id in seen:
+            state = await _compliance_state_with_fallback(self, app_id)
+            if state is not None:
+                states.append(state)
+
+    for state in states:
         app_id = str(state["application_id"])
         detail = await _backend_get_application_detail(self, app_id)
         if detail is None:
@@ -494,7 +580,7 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
     loan_events = await self.store.load_stream(f"loan-{application_id}")
     credit_events = await self.store.load_stream(f"credit-{application_id}")
     fraud_events = await self.store.load_stream(f"fraud-{application_id}")
-    compliance_state = self.runtime.compliance_audit.get_current_compliance(application_id)
+    compliance_state = await _compliance_state_with_fallback(self, application_id)
     manual_review = _manual_review_for(self.runtime, application_id)
 
     submitted = _last_event(loan_events, "ApplicationSubmitted")
@@ -608,7 +694,19 @@ async def _backend_list_review_queue(self: Backend) -> list[dict[str, Any]]:
 
 async def _backend_list_compliance_rows(self: Backend) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for state in self.runtime.compliance_audit._current.values():
+    states = list(self.runtime.compliance_audit._current.values())
+    if not states:
+        seen: set[str] = set()
+        async for event in self.store.load_all(from_position=0, event_types=["ComplianceCheckCompleted"]):
+            app_id = str((event.get("payload") or {}).get("application_id") or "")
+            if app_id:
+                seen.add(app_id)
+        for app_id in seen:
+            state = await _compliance_state_with_fallback(self, app_id)
+            if state is not None:
+                states.append(state)
+
+    for state in states:
         app_id = str(state["application_id"])
         detail = await _backend_get_application_detail(self, app_id)
         if detail is None:
