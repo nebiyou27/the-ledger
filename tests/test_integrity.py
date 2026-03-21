@@ -7,7 +7,7 @@ from src.integrity.audit_chain import run_integrity_check
 
 
 @pytest.mark.asyncio
-async def test_run_integrity_check_appends_audit_event_and_hashes_incrementally():
+async def test_run_integrity_check_is_read_only_and_hashes_current_chain():
     store = InMemoryEventStore()
     await store.append(
         "loan-APEX-55",
@@ -32,12 +32,11 @@ async def test_run_integrity_check_appends_audit_event_and_hashes_incrementally(
     )
     second = await run_integrity_check(store, entity_type="loan", entity_id="APEX-55")
     assert second.chain_valid is True
-    assert second.events_verified == 1
-    assert second.previous_hash == first.integrity_hash
+    assert second.events_verified == 3
+    assert second.previous_hash is None
 
     audit_events = await store.load_stream("audit-loan-APEX-55")
-    assert len(audit_events) == 2
-    assert audit_events[-1]["payload"]["previous_hash"] == first.integrity_hash
+    assert audit_events == []
 
 
 @pytest.mark.asyncio
@@ -55,8 +54,30 @@ async def test_run_integrity_check_detects_tampered_verified_prefix():
     first = await run_integrity_check(store, entity_type="loan", entity_id="APEX-56")
     assert first.chain_valid is True
 
+    await store.append(
+        "audit-loan-APEX-56",
+        [
+            {
+                "event_type": "AuditIntegrityCheckRun",
+                "payload": {
+                    "entity_type": "loan",
+                    "entity_id": "APEX-56",
+                    "check_timestamp": "2026-03-21T00:00:00Z",
+                    "events_verified_count": first.events_verified,
+                    "integrity_hash": first.integrity_hash,
+                    "previous_hash": None,
+                    "chain_valid": True,
+                    "tamper_detected": False,
+                },
+            }
+        ],
+        expected_version=-1,
+    )
+
     store._streams["loan-APEX-56"][0]["payload"]["requested_amount_usd"] = 12345
 
     second = await run_integrity_check(store, entity_type="loan", entity_id="APEX-56")
     assert second.chain_valid is False
     assert second.tamper_detected is True
+    audit_events = await store.load_stream("audit-loan-APEX-56")
+    assert len(audit_events) == 1

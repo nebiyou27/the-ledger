@@ -334,10 +334,8 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
 
 async def _backend_list_timeline(self: Backend, application_id: str | None = None) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    async for event in self.store.load_all(from_position=0):
+    async for event in self.store.load_all(from_position=0, application_id=application_id):
         payload = event.get("payload") or {}
-        if application_id and str(payload.get("application_id")) != application_id:
-            continue
         events.append(
             {
                 "eventName": event.get("event_type"),
@@ -569,10 +567,8 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
 
 async def _backend_list_timeline(self: Backend, application_id: str | None = None) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    async for event in self.store.load_all(from_position=0):
+    async for event in self.store.load_all(from_position=0, application_id=application_id):
         payload = event.get("payload") or {}
-        if application_id and str(payload.get("application_id")) != application_id:
-            continue
         events.append(
             {
                 "eventName": event.get("event_type"),

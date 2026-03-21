@@ -67,11 +67,9 @@ def _to_dt(value: Any) -> datetime:
 
 async def _collect_timeline(store: EventStore, application_id: str) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    async for event in store.load_all(from_position=0):
+    async for event in store.load_all(from_position=0, application_id=application_id):
         payload = event.get("payload") or {}
         metadata = event.get("metadata") or {}
-        if str(payload.get("application_id")) != application_id and not str(event.get("stream_id", "")).endswith(f"-{application_id}"):
-            continue
         events.append(
             {
                 "timestamp": _iso(event.get("recorded_at")),

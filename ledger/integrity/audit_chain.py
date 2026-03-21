@@ -3,11 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
-
-from ledger.schema.events import AuditIntegrityCheckRun
-
 
 def _canonical_event_hash(event: dict[str, Any]) -> str:
     material = {
@@ -65,20 +61,7 @@ async def run_integrity_check(store, entity_type: str, entity_id: str) -> Integr
     events_to_verify = domain_events[previously_verified:]
     base_hash = prefix_hash if tamper_detected and prefix_hash is not None else previous_hash
     integrity_hash = _hash_event_sequence(events_to_verify, previous_hash=base_hash)
-
-    audit_event = AuditIntegrityCheckRun(
-        entity_type=entity_type,
-        entity_id=entity_id,
-        check_timestamp=datetime.now(timezone.utc),
-        events_verified_count=len(domain_events),
-        integrity_hash=integrity_hash,
-        previous_hash=previous_hash,
-        chain_valid=chain_valid,
-        tamper_detected=tamper_detected,
-    ).to_store_dict()
-
     audit_version = await store.stream_version(audit_stream)
-    positions = await store.append(audit_stream, [audit_event], expected_version=audit_version)
 
     return IntegrityCheckResult(
         entity_type=entity_type,
@@ -88,5 +71,5 @@ async def run_integrity_check(store, entity_type: str, entity_id: str) -> Integr
         tamper_detected=tamper_detected,
         integrity_hash=integrity_hash,
         previous_hash=previous_hash,
-        audit_stream_version=positions[-1] if positions else audit_version,
+        audit_stream_version=audit_version,
     )

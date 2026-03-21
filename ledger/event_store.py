@@ -236,13 +236,26 @@ class EventStore:
         from_position: int = 0,
         batch_size: int = 500,
         event_types: list[str] | None = None,
+        application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         pool = self._require_pool()
         last_seen = from_position - 1
 
         async with pool.acquire() as conn:
             while True:
-                if event_types:
+                if event_types and application_id is not None:
+                    rows = await conn.fetch(
+                        "SELECT event_id, stream_id, stream_position, global_position, event_type, "
+                        "event_version, payload, metadata, recorded_at "
+                        "FROM events WHERE global_position > $1 AND event_type = ANY($2::text[]) "
+                        "AND payload->>'application_id' = $3 "
+                        "ORDER BY global_position ASC LIMIT $4",
+                        last_seen,
+                        event_types,
+                        application_id,
+                        batch_size,
+                    )
+                elif event_types:
                     rows = await conn.fetch(
                         "SELECT event_id, stream_id, stream_position, global_position, event_type, "
                         "event_version, payload, metadata, recorded_at "
@@ -250,6 +263,16 @@ class EventStore:
                         "ORDER BY global_position ASC LIMIT $3",
                         last_seen,
                         event_types,
+                        batch_size,
+                    )
+                elif application_id is not None:
+                    rows = await conn.fetch(
+                        "SELECT event_id, stream_id, stream_position, global_position, event_type, "
+                        "event_version, payload, metadata, recorded_at "
+                        "FROM events WHERE global_position > $1 AND payload->>'application_id' = $2 "
+                        "ORDER BY global_position ASC LIMIT $3",
+                        last_seen,
+                        application_id,
                         batch_size,
                     )
                 else:
@@ -461,12 +484,15 @@ class InMemoryEventStore:
         from_position: int = 0,
         batch_size: int = 500,
         event_types: list[str] | None = None,
+        application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         yielded = 0
         for event in self._global:
             if event["global_position"] < from_position:
                 continue
             if event_types and event["event_type"] not in event_types:
+                continue
+            if application_id is not None and str(event.get("payload", {}).get("application_id")) != application_id:
                 continue
             yielded += 1
             if self.upcasters:
