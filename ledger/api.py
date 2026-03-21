@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
+from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
 from ledger.mcp_server import MCPRuntime, create_runtime
 from ledger.registry.client import ApplicantRegistryClient
@@ -31,7 +32,7 @@ def create_app() -> FastAPI:
         allow_origins=["*"],
         allow_credentials=False,
         allow_methods=["*"],
-        allow_headers=["*"],
+        allow_headers=["*", "Authorization", "X-API-Key"],
     )
 
     @app.get("/health")
@@ -40,12 +41,14 @@ def create_app() -> FastAPI:
 
     @app.get("/applications")
     async def applications(request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_applications())
 
     @app.get("/applications/{application_id}")
     async def application_detail(application_id: str, request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         row = await backend.get_application_detail(application_id)
@@ -55,30 +58,35 @@ def create_app() -> FastAPI:
 
     @app.get("/timeline")
     async def timeline(request: Request, application_id: str | None = None) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_timeline(application_id))
 
     @app.get("/review-queue")
     async def review_queue(request: Request) -> Any:
+        _require_roles(request, {"reviewer", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_review_queue())
 
     @app.get("/compliance")
     async def compliance(request: Request) -> Any:
+        _require_roles(request, {"compliance", "auditor", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_compliance_rows())
 
     @app.get("/agents")
     async def agents(request: Request) -> Any:
+        _require_roles(request, {"analyst", "admin"})
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_agent_performance())
 
     @app.post("/refresh")
     async def refresh(request: Request) -> Any:
+        _require_roles(request, {"admin"})
         backend = _get_backend(request)
         return jsonable_encoder(await backend.sync())
 
@@ -144,6 +152,25 @@ def _get_backend(request: Request) -> Backend:
     if backend is None:
         raise RuntimeError("Backend has not been initialized")
     return backend
+
+
+def _principal_for_request(request: Request):
+    token = get_bearer_token(request.headers)
+    principal = resolve_principal(token)
+    if auth_enabled() and principal is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid API credentials")
+    return principal
+
+
+def _require_roles(request: Request, allowed_roles: set[str]):
+    principal = _principal_for_request(request)
+    if principal is None:
+        return None
+    if principal.role == "admin":
+        return principal
+    if principal.role not in allowed_roles:
+        raise HTTPException(status_code=403, detail=f"Role '{principal.role}' is not allowed to access this resource")
+    return principal
 
 
 def _now() -> datetime:

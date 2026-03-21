@@ -125,6 +125,19 @@ See `.env.example` for full values.
 - `DOCUMENTS_DIR`: local generated documents directory
 - `REGULATION_VERSION`: rule set version
 - `LOG_LEVEL`: runtime logging level
+- `LEDGER_API_KEYS`: optional comma-separated `role=token` pairs for API access control
+
+## Demo Access
+
+When `LEDGER_API_KEYS` is set, use the matching Bearer token for each screen:
+
+- `viewer`: applications list, application detail, and timeline
+- `reviewer`: review queue
+- `compliance`: compliance view
+- `analyst`: agent performance view
+- `admin`: all screens, including refresh
+
+The sample `.env.example` pairs `NEXT_PUBLIC_LEDGER_API_KEY=dev-viewer-key` with the viewer role so the default frontend can read the application screens without extra setup.
 
 ## Testing Strategy
 
@@ -146,3 +159,9 @@ pytest tests/test_narratives.py -v
 - Keep append operations transaction-safe with optimistic concurrency checks.
 - To inspect a single application end-to-end, run `python scripts/audit_application.py --application-id APEX-0007`.
 - The script also writes a JSON artifact to `artifacts/audit-APEX-0007.json` by default.
+
+## Known Limitations
+
+- Security hardening is intentionally lightweight in this challenge build. The API supports API-key authentication and role-based authorization when `LEDGER_API_KEYS` is configured, but CORS remains permissive for demo convenience and the model is still not production-hardened.
+- Compliance state is projection-backed first and read-side reconstructed as a fallback when needed. That makes the system resilient during demos, but it still depends on projection freshness for the best experience.
+- Integrity verification is read-only now, which is the safer behavior for audit checks. If you want long-lived tamper evidence, the next step would be a dedicated immutable audit store rather than relying on the application event streams alone.

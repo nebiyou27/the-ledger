@@ -2,6 +2,7 @@ import { agentPerformance, applications, complianceRows, reviewQueue, timelineEv
 import { LoanApplication } from '@/types/loan'
 
 const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
+const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
 
 async function loadOrMock<T>(path: string, fallback: T): Promise<T> {
   if (!baseUrl) {
@@ -10,7 +11,8 @@ async function loadOrMock<T>(path: string, fallback: T): Promise<T> {
 
   try {
     const response = await fetch(`${baseUrl}${path}`, {
-      cache: 'no-store'
+      cache: 'no-store',
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
     })
 
     if (!response.ok) {

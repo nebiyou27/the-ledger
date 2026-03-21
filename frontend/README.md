@@ -28,6 +28,16 @@ Then set:
 
 ```bash
 NEXT_PUBLIC_LEDGER_API_BASE_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_LEDGER_API_KEY=dev-viewer-key
 ```
 
 If the API is unavailable, the frontend automatically falls back to mock data.
+If you enable API-key auth on the backend, the frontend will send `NEXT_PUBLIC_LEDGER_API_KEY` as a Bearer token.
+
+## Demo Roles
+
+- `dev-viewer-key`: application list, application detail, and timeline screens
+- `dev-reviewer-key`: review queue
+- `dev-compliance-key`: compliance screen
+- `dev-analyst-key`: agent performance screen
+- `dev-admin-key`: full access, including refresh
