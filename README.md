@@ -144,3 +144,5 @@ pytest tests/test_narratives.py -v
 - `asyncpg` is optional at import time to keep in-memory testing lightweight.
 - Upcasters are expected to run on reads, not mutate persisted event records.
 - Keep append operations transaction-safe with optimistic concurrency checks.
+- To inspect a single application end-to-end, run `python scripts/audit_application.py --application-id APEX-0007`.
+- The script also writes a JSON artifact to `artifacts/audit-APEX-0007.json` by default.
