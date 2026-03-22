@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import ipaddress
+import os
+import socket
+import urllib.request
+from argparse import Namespace
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -13,6 +22,17 @@ from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
 from ledger.mcp_server import MCPRuntime, create_runtime
 from ledger.registry.client import ApplicantRegistryClient
+from ledger.schema.events import (
+    ApplicationSubmitted,
+    DocumentAdded,
+    DocumentFormat,
+    DocumentType,
+    DocumentUploadRequested,
+    DocumentUploaded,
+    LoanPurpose,
+    PackageCreated,
+)
+from scripts.run_pipeline import run_pipeline
 
 
 def create_app() -> FastAPI:
@@ -102,6 +122,173 @@ def create_app() -> FastAPI:
         backend = _get_backend(request)
         return jsonable_encoder(await backend.sync())
 
+    @app.post("/applications/intake")
+    async def intake_application(
+        request: Request,
+        company_id: str = Form(...),
+        application_id: str | None = Form(None),
+        requested_amount: float | None = Form(None),
+        loan_purpose: str = Form("working_capital"),
+        application_proposal: UploadFile | None = File(None),
+        income_statement: UploadFile | None = File(None),
+        balance_sheet: UploadFile | None = File(None),
+        bank_statements: UploadFile | None = File(None),
+        application_proposal_url: str | None = Form(None),
+        income_statement_url: str | None = Form(None),
+        balance_sheet_url: str | None = Form(None),
+        bank_statements_url: str | None = Form(None),
+    ) -> Any:
+        _require_roles(request, {"analyst", "reviewer", "compliance", "admin"})
+        backend = _get_backend(request)
+        registry = backend.registry
+        if registry is None:
+            raise HTTPException(status_code=503, detail="Applicant registry is not available")
+
+        company = await registry.get_company(company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail=f"Company '{company_id}' not found")
+
+        loan_stream = f"loan-{application_id or await _next_application_id(backend)}"
+        application_id = loan_stream.replace("loan-", "", 1)
+        existing_version = await backend.store.stream_version(loan_stream)
+        if existing_version >= 0:
+            raise HTTPException(status_code=409, detail=f"Application '{application_id}' already exists")
+
+        docs_root = _documents_root()
+        application_dir = docs_root / company_id / application_id
+        application_dir.mkdir(parents=True, exist_ok=True)
+
+        uploads: list[tuple[str, UploadFile | None, str | None, DocumentType, int | None]] = [
+            ("application_proposal", application_proposal, application_proposal_url, DocumentType.APPLICATION_PROPOSAL, None),
+            ("income_statement", income_statement, income_statement_url, DocumentType.INCOME_STATEMENT, 2024),
+            ("balance_sheet", balance_sheet, balance_sheet_url, DocumentType.BALANCE_SHEET, 2024),
+        ]
+        if bank_statements is not None:
+            uploads.append(("bank_statements", bank_statements, bank_statements_url, DocumentType.BANK_STATEMENTS, None))
+        elif bank_statements_url:
+            uploads.append(("bank_statements", None, bank_statements_url, DocumentType.BANK_STATEMENTS, None))
+
+        document_records: list[dict[str, Any]] = []
+        for slot_name, upload, source_url, document_type, fiscal_year in uploads:
+            if upload is None and not source_url:
+                raise HTTPException(status_code=400, detail=f"Missing file or URL for '{slot_name}'")
+            record = await _persist_document_source(
+                upload=upload,
+                source_url=source_url,
+                application_dir=application_dir,
+                company_id=company_id,
+                application_id=application_id,
+                slot_name=slot_name,
+                document_type=document_type,
+                fiscal_year=fiscal_year,
+            )
+            document_records.append(record)
+
+        now = _now()
+        submission_amount = requested_amount if requested_amount is not None else 250_000.0
+        loan_purpose_value = str(loan_purpose or LoanPurpose.WORKING_CAPITAL.value)
+        try:
+            purpose = LoanPurpose(loan_purpose_value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid loan purpose '{loan_purpose_value}'") from exc
+
+        loan_events = [
+            ApplicationSubmitted(
+                application_id=application_id,
+                applicant_id=company_id,
+                requested_amount_usd=submission_amount,
+                loan_purpose=purpose,
+                loan_term_months=36,
+                submission_channel="web-upload",
+                contact_email=f"{company_id.lower()}@synthetic.example",
+                contact_name=str(company.get("name") or company_id),
+                submitted_at=now,
+                application_reference=application_id,
+            ).to_store_dict(),
+            DocumentUploadRequested(
+                application_id=application_id,
+                required_document_types=[
+                    DocumentType.APPLICATION_PROPOSAL,
+                    DocumentType.INCOME_STATEMENT,
+                    DocumentType.BALANCE_SHEET,
+                ],
+                deadline=now,
+                requested_by="browser-upload",
+            ).to_store_dict(),
+        ]
+
+        for record in document_records:
+            loan_events.append(
+                DocumentUploaded(
+                    application_id=application_id,
+                    document_id=record["document_id"],
+                    document_type=DocumentType(record["document_type"]),
+                    document_format=DocumentFormat(record["document_format"]),
+                    filename=record["filename"],
+                    file_path=record["file_path"],
+                    file_size_bytes=record["file_size_bytes"],
+                    file_hash=record["file_hash"],
+                    fiscal_year=record["fiscal_year"],
+                    uploaded_at=now,
+                    uploaded_by="browser-upload",
+                ).to_store_dict()
+            )
+
+        docpkg_events = [
+            PackageCreated(
+                package_id=application_id,
+                application_id=application_id,
+                required_documents=[
+                    DocumentType.APPLICATION_PROPOSAL,
+                    DocumentType.INCOME_STATEMENT,
+                    DocumentType.BALANCE_SHEET,
+                ],
+                created_at=now,
+            ).to_store_dict(),
+        ]
+        for record in document_records:
+            docpkg_events.append(
+                DocumentAdded(
+                    package_id=application_id,
+                    document_id=record["document_id"],
+                    document_type=DocumentType(record["document_type"]),
+                    document_format=DocumentFormat(record["document_format"]),
+                    file_hash=record["file_hash"],
+                    added_at=now,
+                ).to_store_dict()
+            )
+
+        await backend.store.append(loan_stream, loan_events, expected_version=-1)
+        await backend.store.append(f"docpkg-{application_id}", docpkg_events, expected_version=-1)
+
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("TEST_DB_URL")
+        if not db_url:
+            raise HTTPException(status_code=500, detail="DATABASE_URL or TEST_DB_URL is not configured")
+
+        pipeline_args = Namespace(
+            app=application_id,
+            phase="all",
+            db_url=db_url,
+            llm="mock",
+            model="deepseek-r1:8b",
+        )
+        pipeline_result = await run_pipeline(pipeline_args)
+        if pipeline_result != 0:
+            raise HTTPException(status_code=500, detail=f"Pipeline failed for application '{application_id}'")
+
+        await backend.sync()
+        detail = await backend.get_application_detail(application_id)
+        return jsonable_encoder(
+            {
+                "ok": True,
+                "application_id": application_id,
+                "company_id": company_id,
+                "detail": detail,
+                "documents": document_records,
+                "pipeline_result": pipeline_result,
+            }
+        )
+
     return app
 
 
@@ -157,6 +344,144 @@ async def _build_backend() -> Backend:
     backend = Backend(runtime=runtime, registry=registry)
     _attach_backend_methods(backend)
     return backend
+
+
+def _documents_root() -> Path:
+    value = os.environ.get("DOCUMENTS_DIR", "documents")
+    return Path(value).expanduser().resolve()
+
+
+async def _next_application_id(backend: Backend) -> str:
+    existing: set[str] = set()
+    async for event in backend.store.load_all(from_position=0, event_types=["ApplicationSubmitted"]):
+        stream_id = str(event.get("stream_id") or "")
+        if stream_id.startswith("loan-"):
+            existing.add(stream_id.replace("loan-", "", 1))
+
+    index = 30
+    while True:
+        candidate = f"APEX-{index:04d}"
+        if candidate not in existing:
+            return candidate
+        index += 1
+
+
+def _infer_document_format(filename: str) -> DocumentFormat:
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return DocumentFormat.PDF
+    if suffix in {".xlsx", ".xls"}:
+        return DocumentFormat.XLSX
+    if suffix == ".csv":
+        return DocumentFormat.CSV
+    raise HTTPException(status_code=400, detail=f"Unsupported document format '{suffix or 'unknown'}'")
+
+
+async def _persist_document_source(
+    *,
+    upload: UploadFile | None,
+    source_url: str | None,
+    application_dir: Path,
+    company_id: str,
+    application_id: str,
+    slot_name: str,
+    document_type: DocumentType,
+    fiscal_year: int | None,
+) -> dict[str, Any]:
+    if upload is not None:
+        filename = Path(upload.filename or f"{slot_name}.bin").name
+        contents = await upload.read()
+    else:
+        filename, contents = await _fetch_remote_document(source_url or "", slot_name)
+
+    document_format = _infer_document_format(filename)
+    if not contents:
+        raise HTTPException(status_code=400, detail=f"Uploaded file '{filename}' is empty")
+
+    file_hash = hashlib.sha256(contents).hexdigest()
+    safe_name = f"{slot_name}_{filename}"
+    destination = application_dir / safe_name
+    destination.write_bytes(contents)
+    return {
+        "document_id": f"doc-{hashlib.sha1(f'{application_id}:{slot_name}:{filename}'.encode('utf-8')).hexdigest()[:12]}",
+        "document_type": document_type.value,
+        "document_format": document_format.value,
+        "filename": filename,
+        "file_path": str(destination),
+        "file_size_bytes": len(contents),
+        "file_hash": file_hash,
+        "fiscal_year": fiscal_year,
+        "company_id": company_id,
+    }
+
+
+async def _fetch_remote_document(source_url: str, slot_name: str) -> tuple[str, bytes]:
+    parsed = urlparse(source_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported URL scheme for '{slot_name}'")
+    if not parsed.hostname:
+        raise HTTPException(status_code=400, detail=f"Invalid URL for '{slot_name}'")
+    _reject_private_hostname(parsed.hostname)
+
+    def _download() -> tuple[str, bytes]:
+        request = urllib.request.Request(source_url, headers={"User-Agent": "the-ledger/1.0"})
+        with urllib.request.urlopen(request, timeout=30) as response:  # nosec: controlled by hostname validation
+            content_type = str(response.headers.get("Content-Type", "")).split(";", 1)[0].strip().lower()
+            content_disposition = response.headers.get("Content-Disposition", "")
+            filename = _filename_from_headers(content_disposition, parsed.path, slot_name, content_type)
+            data = response.read(25 * 1024 * 1024 + 1)
+            if len(data) > 25 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail=f"Remote file for '{slot_name}' is too large")
+            return filename, data
+
+    try:
+        return await asyncio.to_thread(_download)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to fetch remote document for '{slot_name}': {exc}") from exc
+
+
+def _filename_from_headers(content_disposition: str, path: str, slot_name: str, content_type: str) -> str:
+    if content_disposition:
+        for part in content_disposition.split(";"):
+            part = part.strip()
+            if part.lower().startswith("filename="):
+                candidate = part.split("=", 1)[1].strip().strip('"').strip("'")
+                if candidate:
+                    return Path(candidate).name
+
+    path_name = Path(path).name
+    if path_name:
+        return path_name
+
+    suffix_map = {
+        "application/pdf": ".pdf",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+        "application/vnd.ms-excel": ".xls",
+        "text/csv": ".csv",
+    }
+    suffix = suffix_map.get(content_type, ".bin")
+    return f"{slot_name}{suffix}"
+
+
+def _reject_private_hostname(hostname: str) -> None:
+    lowered = hostname.lower()
+    if lowered in {"localhost", "127.0.0.1", "::1"}:
+        raise HTTPException(status_code=400, detail="Remote URL must not target localhost")
+
+    try:
+        addresses = {result[4][0] for result in socket.getaddrinfo(hostname, None)}
+    except socket.gaierror:
+        return
+
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            raise HTTPException(status_code=400, detail="Remote URL resolves to a private or local address")
 
 
 def _get_backend(request: Request) -> Backend:

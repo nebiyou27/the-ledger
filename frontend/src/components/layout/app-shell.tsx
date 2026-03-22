@@ -3,7 +3,6 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { ReactNode } from 'react'
-import { dataSourceNote } from '@/lib/backend-note'
 import { cn } from '@/lib/utils'
 
 const navItems = [
@@ -54,11 +53,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               )
             })}
           </nav>
-
-          <div className="mt-8 rounded-3xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-            <div className="font-semibold text-white">Backend hook</div>
-            <p className="mt-2 leading-6">{dataSourceNote}</p>
-          </div>
         </aside>
 
         <main className="min-w-0">
@@ -69,9 +63,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <h1 className="mt-1 font-display text-2xl font-semibold tracking-tight text-slate-900">
                   Demo-ready operations console
                 </h1>
-              </div>
-              <div className="hidden rounded-full bg-teal-50 px-4 py-2 text-sm font-medium text-teal-800 ring-1 ring-teal-200 md:block">
-                Mock data mode
               </div>
             </div>
           </header>

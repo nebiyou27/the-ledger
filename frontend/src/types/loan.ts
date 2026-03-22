@@ -44,6 +44,15 @@ export interface ComplianceRuleResult {
   regulationVersion: string
 }
 
+export interface ReviewQueueItem {
+  applicationId: string
+  businessName: string
+  reason: string
+  confidence: number
+  assignedReviewer: string
+  lastUpdated: string
+}
+
 export interface FactItem {
   label: string
   value: string

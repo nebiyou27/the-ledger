@@ -1,4 +1,4 @@
-import { AgentPerformanceRecord, LoanApplication, TimelineEvent } from '@/types/loan'
+import { AgentPerformanceRecord, LoanApplication, ReviewQueueItem, TimelineEvent } from '@/types/loan'
 
 function makeEvent(
   eventName: string,
@@ -334,7 +334,16 @@ export const timelineEvents: TimelineEvent[] = applications
   .flatMap((application) => application.timeline)
   .sort((left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime())
 
-export const reviewQueue = applications.filter((application) => application.status === 'Human Review')
+export const reviewQueue: ReviewQueueItem[] = applications
+  .filter((application) => application.status === 'Human Review')
+  .map((application) => ({
+    applicationId: application.id,
+    businessName: application.businessName,
+    reason: application.reviewReason ?? application.policyNotes,
+    confidence: application.confidenceScore,
+    assignedReviewer: application.assignedReviewer ?? 'Unassigned',
+    lastUpdated: application.lastUpdated
+  }))
 
 export const complianceRows = applications.map((application) => ({
   applicationId: application.id,

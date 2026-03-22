@@ -1,5 +1,5 @@
 import { agentPerformance, applications, complianceRows, reviewQueue, timelineEvents } from '@/data/mock-data'
-import { LoanApplication } from '@/types/loan'
+import { LoanApplication, ReviewQueueItem } from '@/types/loan'
 
 const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
 const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
@@ -42,7 +42,7 @@ export async function listTimelineEvents() {
 }
 
 export async function listReviewQueue() {
-  return loadOrMock('/review-queue', reviewQueue)
+  return loadOrMock<ReviewQueueItem[]>('/review-queue', reviewQueue)
 }
 
 export async function listComplianceRows() {
@@ -51,6 +51,43 @@ export async function listComplianceRows() {
 
 export async function listAgentPerformance() {
   return loadOrMock('/agents', agentPerformance)
+}
+
+export async function submitIntakeApplication(formData: FormData) {
+  if (!baseUrl) {
+    throw new Error('Mock data mode is active. Set NEXT_PUBLIC_LEDGER_API_BASE_URL to submit a real application.')
+  }
+
+  const response = await fetch(`${baseUrl}/applications/intake`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    body: formData
+  })
+
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = payload?.detail ?? payload?.message ?? `Request failed with status ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+
+  return payload as {
+    ok: boolean
+    application_id: string
+    company_id: string
+    detail: unknown
+    documents: Array<{
+      document_id: string
+      filename: string
+      file_path: string
+      file_size_bytes: number
+      file_hash: string
+      document_type: string
+      document_format: string
+      fiscal_year: number | null
+    }>
+    pipeline_result: number
+  }
 }
 
 export const dataSourceNote = baseUrl
