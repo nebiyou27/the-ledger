@@ -37,6 +37,21 @@ async def test_postgres_event_store_smoke():
         assert events[0]["event_type"] == "SmokeStarted"
         assert events[0]["metadata"]["correlation_id"] == "smoke-corr-1"
 
+        typed_events = await store.load_stream_records(stream_id)
+        assert typed_events[0].stream_id == stream_id
+        assert typed_events[0].event_type == "SmokeStarted"
+
+        meta = await store.get_stream_metadata_record(stream_id)
+        assert meta is not None
+        assert meta.stream_id == stream_id
+        assert meta.current_version == 0
+        assert meta.archived_at is None
+
+        await store.archive_stream(stream_id)
+        archived_meta = await store.get_stream_metadata_record(stream_id)
+        assert archived_meta is not None
+        assert archived_meta.archived_at is not None
+
         replay = [event async for event in store.load_all(from_position=0)]
         assert any(event["stream_id"] == stream_id for event in replay)
     finally:

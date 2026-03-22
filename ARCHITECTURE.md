@@ -16,6 +16,16 @@ Additional domain streams: `credit-{id}`, `fraud-{id}`, `docpkg-{id}`, `audit-{i
 
 ---
 
+## Core Invariants
+
+- Event streams are append-only; updates happen by writing new events, never by mutating prior history.
+- `stream_position` is unique per stream, and global ordering comes from the identity-backed `global_position`.
+- Command handlers must load state, validate domain rules, and append atomically with the tracked `expected_version`.
+- The outbox is written in the same transaction as the event append so downstream delivery can be retried safely.
+- Projections are asynchronous, checkpointed, and restart from the last saved global position.
+
+---
+
 ## Command-Write Path
 
 ```mermaid

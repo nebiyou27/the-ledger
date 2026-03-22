@@ -8,7 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from ledger.event_store import OptimisticConcurrencyError
+from ledger.exceptions import OptimisticConcurrencyError
 from ledger.schema.events import *  # re-export canonical event catalogue
 
 

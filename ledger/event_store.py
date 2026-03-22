@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -12,26 +11,14 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
 
+from src.models.events import StoredEvent, StreamMetadata
+
 try:
     import asyncpg
 except ModuleNotFoundError:  # pragma: no cover - exercised only in lean local envs
     asyncpg = None
 
-
-@dataclass(slots=True)
-class OptimisticConcurrencyError(Exception):
-    """Raised when expected_version doesn't match the current stream version."""
-
-    stream_id: str
-    expected: int
-    actual: int
-
-    @classmethod
-    def from_versions(cls, stream_id: str, expected: int, actual: int) -> "OptimisticConcurrencyError":
-        return cls(stream_id=stream_id, expected=expected, actual=actual)
-
-    def __post_init__(self) -> None:
-        Exception.__init__(self, f"OCC on '{self.stream_id}': expected v{self.expected}, actual v{self.actual}")
+from ledger.exceptions import OptimisticConcurrencyError
 
 
 def _utcnow() -> datetime:
@@ -74,6 +61,21 @@ def _row_to_event(row: Any) -> dict[str, Any]:
     event["payload"] = dict(payload or {})
     event["metadata"] = dict(metadata or {})
     return event
+
+
+def _row_to_stored_event(row: Any) -> StoredEvent:
+    event = _row_to_event(row)
+    return StoredEvent.model_validate(event)
+
+
+def _row_to_stream_metadata(row: Any) -> StreamMetadata:
+    metadata = dict(row)
+    raw_json = metadata.get("metadata")
+    if isinstance(raw_json, str):
+        metadata["metadata"] = json.loads(raw_json)
+    elif raw_json is None:
+        metadata["metadata"] = {}
+    return StreamMetadata.model_validate(metadata)
 
 
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "event_store.sql"
@@ -218,6 +220,14 @@ class EventStore:
         from_position: int = 0,
         to_position: int | None = None,
     ) -> list[dict]:
+        return [record.model_dump(mode="python") for record in await self.load_stream_records(stream_id, from_position, to_position)]
+
+    async def load_stream_records(
+        self,
+        stream_id: str,
+        from_position: int = 0,
+        to_position: int | None = None,
+    ) -> list[StoredEvent]:
         pool = self._require_pool()
         query = (
             "SELECT event_id, stream_id, stream_position, global_position, event_type, "
@@ -233,9 +243,9 @@ class EventStore:
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
 
-        events = [_row_to_event(row) for row in rows]
+        events = [_row_to_stored_event(row) for row in rows]
         if self.upcasters:
-            return [self.upcasters.upcast(dict(event)) for event in events]
+            return [StoredEvent.model_validate(self.upcasters.upcast(event.model_dump(mode="python"))) for event in events]
         return events
 
     async def load_all(
@@ -330,6 +340,12 @@ class EventStore:
             )
 
     async def get_stream_metadata(self, stream_id: str) -> dict[str, Any] | None:
+        metadata = await self.get_stream_metadata_record(stream_id)
+        if metadata is None:
+            return None
+        return metadata.model_dump(mode="python")
+
+    async def get_stream_metadata_record(self, stream_id: str) -> StreamMetadata | None:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -339,9 +355,7 @@ class EventStore:
             )
         if row is None:
             return None
-        metadata = dict(row)
-        metadata["metadata"] = dict(metadata.get("metadata") or {})
-        return metadata
+        return _row_to_stream_metadata(row)
 
     async def save_checkpoint(self, projection_name: str, position: int) -> None:
         pool = self._require_pool()
@@ -476,14 +490,25 @@ class InMemoryEventStore:
         from_position: int = 0,
         to_position: int | None = None,
     ) -> list[dict]:
+        return [
+            record.model_dump(mode="python")
+            for record in await self.load_stream_records(stream_id, from_position, to_position)
+        ]
+
+    async def load_stream_records(
+        self,
+        stream_id: str,
+        from_position: int = 0,
+        to_position: int | None = None,
+    ) -> list[StoredEvent]:
         events = [
-            dict(event)
+            StoredEvent.model_validate(dict(event))
             for event in self._streams.get(stream_id, [])
             if event["stream_position"] >= from_position
             and (to_position is None or event["stream_position"] <= to_position)
         ]
         if self.upcasters:
-            return [self.upcasters.upcast(dict(event)) for event in events]
+            return [StoredEvent.model_validate(self.upcasters.upcast(event.model_dump(mode="python"))) for event in events]
         return events
 
     async def load_all(
@@ -521,16 +546,23 @@ class InMemoryEventStore:
             self._stream_metadata[stream_id]["archived_at"] = _utcnow()
 
     async def get_stream_metadata(self, stream_id: str) -> dict[str, Any] | None:
+        metadata = await self.get_stream_metadata_record(stream_id)
+        if metadata is None:
+            return None
+        return metadata.model_dump(mode="python")
+
+    async def get_stream_metadata_record(self, stream_id: str) -> StreamMetadata | None:
         meta = self._stream_metadata.get(stream_id)
         if meta is None:
             return None
-        return {
-            "aggregate_type": meta["aggregate_type"],
-            "current_version": self._versions.get(stream_id, -1),
-            "created_at": meta["created_at"],
-            "archived_at": meta["archived_at"],
-            "metadata": dict(meta["metadata"]),
-        }
+        return StreamMetadata(
+            stream_id=stream_id,
+            aggregate_type=meta["aggregate_type"],
+            current_version=self._versions.get(stream_id, -1),
+            created_at=meta["created_at"],
+            archived_at=meta["archived_at"],
+            metadata=dict(meta["metadata"]),
+        )
 
     async def save_checkpoint(self, projection_name: str, position: int) -> None:
         self._checkpoints[projection_name] = position
