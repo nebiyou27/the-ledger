@@ -39,6 +39,18 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, Any]:
         return {"ok": True}
 
+    @app.get("/health/ready")
+    async def readiness(request: Request) -> dict[str, Any]:
+        backend = getattr(request.app.state, "backend", None)
+        if backend is None:
+            return {"ok": False, "ready": False, "reason": "Backend not initialized"}
+        return {
+            "ok": True,
+            "ready": True,
+            "store": backend.store.__class__.__name__,
+            "lag": backend.runtime.get_lag_snapshot(),
+        }
+
     @app.get("/applications")
     async def applications(request: Request) -> Any:
         _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})

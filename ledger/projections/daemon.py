@@ -1,27 +1,48 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 from ledger.projections.base import Projection, ProjectionLag
+from ledger.observability import ProjectionDaemonMetrics
 
 
 class ProjectionDaemon:
-    def __init__(self, store, projections: list[Projection], max_retries: int = 2):
+    def __init__(
+        self,
+        store,
+        projections: list[Projection],
+        max_retries: int = 2,
+        logger: logging.Logger | None = None,
+        metrics: ProjectionDaemonMetrics | None = None,
+    ):
         self._store = store
         self._projections = {p.name: p for p in projections}
         self._max_retries = max_retries
+        self._logger = logger or logging.getLogger(__name__)
+        self._metrics = metrics or ProjectionDaemonMetrics()
         self._running = False
+        self._stop_event = asyncio.Event()
         self._errors: dict[str, int] = {p.name: 0 for p in projections}
 
     async def run_forever(self, poll_interval_ms: int = 100, batch_size: int = 500) -> None:
         self._running = True
-        while self._running:
-            await self._process_batch(batch_size=batch_size)
-            await asyncio.sleep(poll_interval_ms / 1000.0)
+        try:
+            while self._running and not self._stop_event.is_set():
+                await self._process_batch(batch_size=batch_size)
+                await asyncio.sleep(poll_interval_ms / 1000.0)
+        except asyncio.CancelledError:
+            self._metrics.shutdowns += 1
+            self._logger.info("projection_daemon.cancelled")
+            raise
+        finally:
+            self._running = False
+            self._stop_event.set()
 
     def stop(self) -> None:
         self._running = False
+        self._stop_event.set()
 
     async def _process_batch(self, batch_size: int = 500) -> int:
         if not self._projections:
@@ -43,8 +64,10 @@ class ProjectionDaemon:
         if not events:
             return 0
 
+        self._metrics.batches_processed += 1
         for event in events:
             global_position = int(event.get("global_position", -1))
+            self._metrics.events_seen += 1
             for projection in self._projections.values():
                 projection.note_latest(event)
 
@@ -58,10 +81,13 @@ class ProjectionDaemon:
                     if not applied:
                         # After exhausting retries, skip event and continue.
                         self._errors[name] += 1
+                        continue
+
                 projection.mark_progress(event)
-                next_positions[name] = global_position + 1
-                await self._store.save_checkpoint(name, next_positions[name])
-                processed_any += 1
+                checkpoint_position = global_position + 1
+                if await self._save_checkpoint_with_retry(name, checkpoint_position):
+                    next_positions[name] = checkpoint_position
+                    processed_any += 1
 
         return processed_any
 
@@ -71,11 +97,41 @@ class ProjectionDaemon:
             try:
                 await projection.process_event(event)
                 return True
-            except Exception:
+            except Exception as exc:
                 attempts += 1
+                self._metrics.retries += 1
+                self._logger.warning(
+                    "projection_daemon.retry",
+                    extra={
+                        "projection": projection.name,
+                        "event_type": event.get("event_type"),
+                        "attempt": attempts,
+                        "error": exc.__class__.__name__,
+                    },
+                )
                 if attempts > self._max_retries:
+                    self._metrics.failures += 1
                     return False
-                await asyncio.sleep(0)
+                await asyncio.sleep(min(0.05 * attempts, 0.5))
+        return False
+
+    async def _save_checkpoint_with_retry(self, projection_name: str, position: int) -> bool:
+        attempts = 0
+        while attempts <= self._max_retries:
+            try:
+                await self._store.save_checkpoint(projection_name, position)
+                return True
+            except Exception as exc:
+                attempts += 1
+                self._metrics.retries += 1
+                self._logger.warning(
+                    "projection_daemon.checkpoint_retry",
+                    extra={"projection": projection_name, "position": position, "attempt": attempts, "error": exc.__class__.__name__},
+                )
+                if attempts > self._max_retries:
+                    self._metrics.failures += 1
+                    return False
+                await asyncio.sleep(min(0.05 * attempts, 0.5))
         return False
 
     def get_lag(self, projection_name: str) -> ProjectionLag:
@@ -87,3 +143,6 @@ class ProjectionDaemon:
 
     def get_error_counts(self) -> dict[str, int]:
         return dict(self._errors)
+
+    def get_metrics(self) -> dict[str, int]:
+        return self._metrics.snapshot()

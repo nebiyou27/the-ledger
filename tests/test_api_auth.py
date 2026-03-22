@@ -25,3 +25,15 @@ def test_forbidden_role_returns_403(monkeypatch):
 
     assert response.status_code == 403
     assert "not allowed" in response.json()["detail"]
+
+
+def test_readiness_endpoint_reports_backend_state():
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["ready"] is True
+    assert "store" in payload

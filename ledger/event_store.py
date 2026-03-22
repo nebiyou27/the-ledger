@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 from uuid import UUID, uuid4
 
+from ledger.observability import StoreMetrics
 from src.models.events import StoredEvent, StreamMetadata
 
 try:
@@ -84,9 +86,17 @@ SCHEMA_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "event_store.sql
 class EventStore:
     """Append-only PostgreSQL event store with optimistic concurrency control."""
 
-    def __init__(self, db_url: str, upcaster_registry=None):
+    def __init__(
+        self,
+        db_url: str,
+        upcaster_registry=None,
+        metrics: StoreMetrics | None = None,
+        logger: logging.Logger | None = None,
+    ):
         self.db_url = db_url
         self.upcasters = upcaster_registry or _default_upcaster_registry()
+        self._metrics = metrics or StoreMetrics()
+        self._logger = logger or logging.getLogger(__name__)
         self._pool: Any | None = None
 
     async def connect(self) -> None:
@@ -131,6 +141,7 @@ class EventStore:
         if not events:
             return []
 
+        self._metrics.append_calls += 1
         pool = self._require_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -142,9 +153,16 @@ class EventStore:
 
                 current = row["current_version"] if row else -1
                 if current != expected_version:
+                    self._metrics.occ_failures += 1
+                    self._logger.warning(
+                        "event_store.occ",
+                        extra={"stream_id": stream_id, "expected": expected_version, "actual": current},
+                    )
                     raise OptimisticConcurrencyError.from_versions(stream_id, expected_version, current)
 
                 if row and row["archived_at"] is not None:
+                    self._metrics.append_failures += 1
+                    self._logger.warning("event_store.append_archived", extra={"stream_id": stream_id})
                     raise ValueError(f"Cannot append to archived stream '{stream_id}'")
 
                 if row is None:
@@ -212,6 +230,16 @@ class EventStore:
                     new_version,
                     stream_id,
                 )
+                self._metrics.append_events += len(events)
+                self._logger.info(
+                    "event_store.append",
+                    extra={
+                        "stream_id": stream_id,
+                        "event_count": len(events),
+                        "expected_version": expected_version,
+                        "new_version": new_version,
+                    },
+                )
                 return positions
 
     async def load_stream(
@@ -220,6 +248,7 @@ class EventStore:
         from_position: int = 0,
         to_position: int | None = None,
     ) -> list[dict]:
+        self._metrics.load_stream_calls += 1
         return [record.model_dump(mode="python") for record in await self.load_stream_records(stream_id, from_position, to_position)]
 
     async def load_stream_records(
@@ -255,6 +284,7 @@ class EventStore:
         event_types: list[str] | None = None,
         application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
+        self._metrics.load_all_calls += 1
         pool = self._require_pool()
         last_seen = from_position - 1
 
@@ -316,6 +346,7 @@ class EventStore:
                     break
 
     async def get_event(self, event_id: UUID) -> dict | None:
+        self._metrics.get_event_calls += 1
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -332,6 +363,7 @@ class EventStore:
         return event
 
     async def archive_stream(self, stream_id: str) -> None:
+        self._metrics.archive_stream_calls += 1
         pool = self._require_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -340,6 +372,7 @@ class EventStore:
             )
 
     async def get_stream_metadata(self, stream_id: str) -> dict[str, Any] | None:
+        self._metrics.get_stream_metadata_calls += 1
         metadata = await self.get_stream_metadata_record(stream_id)
         if metadata is None:
             return None
@@ -358,6 +391,7 @@ class EventStore:
         return _row_to_stream_metadata(row)
 
     async def save_checkpoint(self, projection_name: str, position: int) -> None:
+        self._metrics.save_checkpoint_calls += 1
         pool = self._require_pool()
         async with pool.acquire() as conn:
             await conn.execute(
@@ -370,6 +404,7 @@ class EventStore:
             )
 
     async def load_checkpoint(self, projection_name: str) -> int:
+        self._metrics.load_checkpoint_calls += 1
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -377,6 +412,9 @@ class EventStore:
                 projection_name,
             )
         return row["last_position"] if row else 0
+
+    def get_metrics_snapshot(self) -> dict[str, int]:
+        return self._metrics.snapshot()
 
     @staticmethod
     def _aggregate_type_for(stream_id: str) -> str:
@@ -416,8 +454,15 @@ class UpcasterRegistry:
 class InMemoryEventStore:
     """Async-safe in-memory store used by the starter's fast tests."""
 
-    def __init__(self, upcaster_registry=None):
+    def __init__(
+        self,
+        upcaster_registry=None,
+        metrics: StoreMetrics | None = None,
+        logger: logging.Logger | None = None,
+    ):
         self.upcasters = upcaster_registry or _default_upcaster_registry()
+        self._metrics = metrics or StoreMetrics()
+        self._logger = logger or logging.getLogger(__name__)
         self._streams: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self._versions: dict[str, int] = {}
         self._global: list[dict[str, Any]] = []
@@ -440,13 +485,21 @@ class InMemoryEventStore:
         if not events:
             return []
 
+        self._metrics.append_calls += 1
         async with self._locks[stream_id]:
             current = self._versions.get(stream_id, -1)
             if current != expected_version:
+                self._metrics.occ_failures += 1
+                self._logger.warning(
+                    "event_store.occ",
+                    extra={"stream_id": stream_id, "expected": expected_version, "actual": current},
+                )
                 raise OptimisticConcurrencyError.from_versions(stream_id, expected_version, current)
 
             stream_meta = self._stream_metadata.get(stream_id)
             if stream_meta and stream_meta.get("archived_at") is not None:
+                self._metrics.append_failures += 1
+                self._logger.warning("event_store.append_archived", extra={"stream_id": stream_id})
                 raise ValueError(f"Cannot append to archived stream '{stream_id}'")
 
             if stream_id not in self._stream_metadata:
@@ -482,6 +535,16 @@ class InMemoryEventStore:
                 positions.append(position)
 
             self._versions[stream_id] = current + len(events)
+            self._metrics.append_events += len(events)
+            self._logger.info(
+                "event_store.append",
+                extra={
+                    "stream_id": stream_id,
+                    "event_count": len(events),
+                    "expected_version": expected_version,
+                    "new_version": self._versions[stream_id],
+                },
+            )
             return positions
 
     async def load_stream(
@@ -490,6 +553,7 @@ class InMemoryEventStore:
         from_position: int = 0,
         to_position: int | None = None,
     ) -> list[dict]:
+        self._metrics.load_stream_calls += 1
         return [
             record.model_dump(mode="python")
             for record in await self.load_stream_records(stream_id, from_position, to_position)
@@ -518,6 +582,7 @@ class InMemoryEventStore:
         event_types: list[str] | None = None,
         application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
+        self._metrics.load_all_calls += 1
         yielded = 0
         for event in self._global:
             if event["global_position"] < from_position:
@@ -535,6 +600,7 @@ class InMemoryEventStore:
                 await asyncio.sleep(0)
 
     async def get_event(self, event_id: UUID | str) -> dict | None:
+        self._metrics.get_event_calls += 1
         event_id_str = str(event_id)
         for event in self._global:
             if event["event_id"] == event_id_str:
@@ -542,10 +608,12 @@ class InMemoryEventStore:
         return None
 
     async def archive_stream(self, stream_id: str) -> None:
+        self._metrics.archive_stream_calls += 1
         if stream_id in self._stream_metadata:
             self._stream_metadata[stream_id]["archived_at"] = _utcnow()
 
     async def get_stream_metadata(self, stream_id: str) -> dict[str, Any] | None:
+        self._metrics.get_stream_metadata_calls += 1
         metadata = await self.get_stream_metadata_record(stream_id)
         if metadata is None:
             return None
@@ -565,10 +633,15 @@ class InMemoryEventStore:
         )
 
     async def save_checkpoint(self, projection_name: str, position: int) -> None:
+        self._metrics.save_checkpoint_calls += 1
         self._checkpoints[projection_name] = position
 
     async def load_checkpoint(self, projection_name: str) -> int:
+        self._metrics.load_checkpoint_calls += 1
         return self._checkpoints.get(projection_name, 0)
+
+    def get_metrics_snapshot(self) -> dict[str, int]:
+        return self._metrics.snapshot()
 
 
 def _default_upcaster_registry() -> UpcasterRegistry:

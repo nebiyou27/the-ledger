@@ -65,11 +65,14 @@ class LoanApplicationAggregate:
         existing_credit_events: list[dict] | None = None,
         superseded_by_human_review: bool = False,
     ) -> None:
-        if self.state not in (
-            ApplicationState.CREDIT_ANALYSIS_REQUESTED,
-            ApplicationState.CREDIT_ANALYSIS_COMPLETE,
+        if self.state in (
+            ApplicationState.NEW,
+            ApplicationState.APPROVED,
+            ApplicationState.DECLINED,
+            ApplicationState.DECLINED_COMPLIANCE,
+            ApplicationState.REFERRED,
         ):
-            raise DomainError("CreditAnalysisCompleted requires a credit analysis request first")
+            raise DomainError("CreditAnalysisCompleted requires an active, non-terminal application")
 
         already_completed = any(
             event.get("event_type") == "CreditAnalysisCompleted"
