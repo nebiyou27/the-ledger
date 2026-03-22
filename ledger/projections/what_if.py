@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 
 def _to_utc_text(value: Any) -> str | None:
@@ -137,3 +137,69 @@ class WhatIfProjector:
         if reason:
             parts.append(f"Override rationale: {reason}.")
         return " ".join(parts)
+
+
+def _resolve_projection_snapshot(
+    projections: Any,
+    application_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    application_summary: dict[str, Any] | None = None
+    compliance_audit: dict[str, Any] | None = None
+
+    if projections is None:
+        return application_summary, compliance_audit
+
+    candidates: list[Any] = []
+    if isinstance(projections, Mapping):
+        candidates.extend(
+            [
+                projections.get("application_summary"),
+                projections.get("application_summary_projection"),
+                projections.get("compliance_audit"),
+                projections.get("compliance_audit_projection"),
+            ]
+        )
+    elif isinstance(projections, (list, tuple, set)):
+        candidates.extend(list(projections))
+    else:
+        candidates.append(projections)
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        if application_summary is None and hasattr(candidate, "get_application"):
+            application_summary = candidate.get_application(application_id)
+        if compliance_audit is None and hasattr(candidate, "get_current_compliance"):
+            compliance_audit = candidate.get_current_compliance(application_id)
+
+    return application_summary, compliance_audit
+
+
+async def run_what_if(
+    store,
+    application_id: str,
+    branch_at_event_type: str | None,
+    counterfactual_events: list[dict[str, Any]] | None,
+    projections,
+) -> dict[str, Any]:
+    loan_events = await store.load_stream(f"loan-{application_id}")
+    branch_index = None
+    if branch_at_event_type:
+        for index, event in enumerate(loan_events):
+            if event.get("event_type") == branch_at_event_type:
+                branch_index = index
+                break
+
+    if branch_index is not None:
+        loan_events = loan_events[: branch_index + 1]
+
+    for event in counterfactual_events or []:
+        loan_events.append(dict(event))
+
+    application_summary, compliance_audit = _resolve_projection_snapshot(projections, application_id)
+    return WhatIfProjector().project(
+        application_id=application_id,
+        loan_events=loan_events,
+        application_summary=application_summary,
+        compliance_audit=compliance_audit,
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,6 +11,11 @@ from ledger.projections import (
     ApplicationSummaryProjection,
     ComplianceAuditProjection,
     ProjectionDaemon,
+)
+from src.commands.handlers import (
+    handle_credit_analysis_completed,
+    handle_start_agent_session,
+    handle_submit_application,
 )
 
 
@@ -182,3 +188,68 @@ async def test_agent_performance_projection_and_lag():
 
     lag = daemon.get_lag("agent_performance")
     assert lag.positions_behind == 0
+
+
+@pytest.mark.asyncio
+async def test_projection_lag_under_concurrent_command_handlers():
+    store = InMemoryEventStore()
+
+    async def _handler(index: int) -> None:
+        application_id = f"APEX-CONC-{index:03d}"
+        session_id = f"sess-conc-{index:03d}"
+
+        await handle_submit_application(
+            store,
+            {
+                "application_id": application_id,
+                "applicant_id": f"COMP-CONC-{index:03d}",
+                "requested_amount_usd": 25000 + index,
+                "submitted_at": "2026-03-19T13:00:00Z",
+                "required_document_types": [
+                    "application_proposal",
+                    "income_statement",
+                    "balance_sheet",
+                ],
+            },
+        )
+        await handle_start_agent_session(
+            store,
+            {
+                "application_id": application_id,
+                "session_id": session_id,
+                "agent_id": f"credit-agent-{index:03d}",
+                "agent_type": "credit_analysis",
+                "model_version": "conc-model-1",
+                "context_source": "projection-backed",
+            },
+        )
+        await handle_credit_analysis_completed(
+            store,
+            {
+                "application_id": application_id,
+                "session_id": session_id,
+                "agent_type": "credit_analysis",
+                "model_version": "conc-model-1",
+                "risk_tier": "LOW",
+                "recommended_limit_usd": 20000 + index,
+                "confidence": 0.9,
+                "rationale": "Concurrent handler stress test.",
+                "completed_at": "2026-03-19T13:01:00Z",
+            },
+        )
+
+    await asyncio.gather(*(_handler(index) for index in range(50)))
+
+    app = ApplicationSummaryProjection()
+    comp = ComplianceAuditProjection()
+    daemon = ProjectionDaemon(store, [app, comp])
+
+    while await daemon._process_batch():
+        pass
+
+    app_lag = daemon.get_lag("application_summary")
+    comp_lag = daemon.get_lag("compliance_audit")
+
+    assert app_lag.positions_behind == 0
+    assert app_lag.millis < 500
+    assert comp_lag.millis < 2000

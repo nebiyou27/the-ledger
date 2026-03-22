@@ -4,7 +4,7 @@ from .base import Projection, ProjectionLag
 from .compliance_audit import ComplianceAuditProjection
 from .daemon import ProjectionDaemon
 from .manual_reviews import ManualReviewsProjection
-from .what_if import WhatIfProjector
+from .what_if import WhatIfProjector, run_what_if
 
 __all__ = [
     "Projection",
@@ -15,4 +15,5 @@ __all__ = [
     "ComplianceAuditProjection",
     "ManualReviewsProjection",
     "WhatIfProjector",
+    "run_what_if",
 ]

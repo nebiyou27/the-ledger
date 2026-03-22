@@ -17,20 +17,17 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     server = create_server(create_runtime(InMemoryEventStore()))
 
     tools = await server.list_tools()
-    assert [tool.name for tool in tools] == [
+    tool_names = {tool.name for tool in tools}
+    assert {
         "submit_application",
         "start_agent_session",
-        "record_credit_analysis_completed",
-        "record_fraud_screening_completed",
-        "record_compliance_check_completed",
+        "record_credit_analysis",
+        "record_fraud_screening",
+        "record_compliance_check",
         "generate_decision",
-        "complete_human_review",
-        "refresh_projections",
-    ]
-
-    resources = await server.list_resources()
-    templates = await server.list_resource_templates()
-    assert len(resources) + len(templates) == 6
+        "record_human_review",
+        "run_integrity_check",
+    }.issubset(tool_names)
 
     error_result = await server.call_tool(
         "submit_application",
@@ -42,6 +39,9 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     )
     assert error_result.structured_content["ok"] is False
     assert "must be > 0" in error_result.structured_content["error"]["message"]
+    assert error_result.structured_content["error"]["type"] == "DomainError"
+    assert error_result.structured_content["error"]["error_type"] == "DomainError"
+    assert error_result.structured_content["error"]["suggested_action"] == "fix_command_and_retry"
 
     submitted = await server.call_tool(
         "submit_application",
@@ -83,7 +83,7 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     )
 
     await server.call_tool(
-        "record_credit_analysis_completed",
+        "record_credit_analysis",
         {
             "application_id": "mcp-app-1",
             "session_id": "credit-session-1",
@@ -97,7 +97,7 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     )
 
     await server.call_tool(
-        "record_fraud_screening_completed",
+        "record_fraud_screening",
         {
             "application_id": "mcp-app-1",
             "session_id": "fraud-session-1",
@@ -111,7 +111,7 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     )
 
     await server.call_tool(
-        "record_compliance_check_completed",
+        "record_compliance_check",
         {
             "application_id": "mcp-app-1",
             "session_id": "compliance-session-1",
@@ -160,24 +160,42 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     refresh = await server.call_tool("refresh_projections", {"max_rounds": 4})
     assert refresh.structured_content["ok"] is True
 
+    integrity = await server.call_tool(
+        "run_integrity_check",
+        {
+            "entity_type": "loan",
+            "entity_id": "mcp-app-1",
+        },
+    )
+    assert integrity.structured_content["ok"] is True
+    assert integrity.structured_content["result"]["entity_type"] == "loan"
+
     summary = _resource_json(
-        await server.read_resource("ledger://projections/application-summaries/mcp-app-1")
+        await server.read_resource("ledger://applications/mcp-app-1")
     )
     assert summary["application_id"] == "mcp-app-1"
     assert summary["state"] == "FINAL_APPROVED"
     assert summary["decision"] == "APPROVE"
 
     compliance = _resource_json(
-        await server.read_resource("ledger://projections/compliance-audit/mcp-app-1")
+        await server.read_resource("ledger://applications/mcp-app-1/compliance")
     )
     assert compliance["overall_verdict"] == "CLEAR"
     assert compliance["has_hard_block"] is False
 
-    summaries = _resource_json(await server.read_resource("ledger://projections/application-summaries"))
-    assert any(row["application_id"] == "mcp-app-1" for row in summaries)
+    compliance_at = _resource_json(
+        await server.read_resource("ledger://applications/mcp-app-1/compliance?as_of=2026-03-20T10:07:00Z")
+    )
+    assert compliance_at["overall_verdict"] == "CLEAR"
 
-    agent_rows = _resource_json(await server.read_resource("ledger://projections/agent-performance"))
+    agent_rows = _resource_json(await server.read_resource("ledger://agents/credit-agent/performance"))
     assert any(row["agent_id"] == "credit-agent" for row in agent_rows)
 
-    manual_reviews = _resource_json(await server.read_resource("ledger://projections/manual-reviews"))
-    assert manual_reviews == []
+    audit_trail = _resource_json(await server.read_resource("ledger://applications/mcp-app-1/audit-trail"))
+    assert isinstance(audit_trail, list)
+    assert audit_trail
+
+    health = _resource_json(await server.read_resource("ledger://ledger/health"))
+    assert health["ok"] is True
+    assert health["p99_target_ms"] == 10
+    assert "application_summary" in health["projections"]

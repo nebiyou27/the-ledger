@@ -11,6 +11,8 @@ from typing import Any
 
 from fastmcp import FastMCP
 
+from ledger.exceptions import OptimisticConcurrencyError
+from ledger.integrity import run_integrity_check
 from ledger.event_store import EventStore, InMemoryEventStore
 from ledger.projections import (
     AgentPerformanceProjection,
@@ -19,6 +21,7 @@ from ledger.projections import (
     ProjectionDaemon,
 )
 from ledger.projections.manual_reviews import ManualReviewsProjection
+from src.models.events import DomainError
 from src.commands.handlers import (
     handle_compliance_check,
     handle_credit_analysis_completed,
@@ -54,14 +57,39 @@ def _structured_ok(tool: str, **payload: Any) -> dict[str, Any]:
     return {"ok": True, "tool": tool, **{key: _json_safe(value) for key, value in payload.items()}}
 
 
+def _suggested_action_for(exc: Exception) -> str:
+    if isinstance(exc, OptimisticConcurrencyError):
+        return "reload_stream_and_retry"
+    if isinstance(exc, DomainError):
+        return "fix_command_and_retry"
+    return "inspect_error_and_retry"
+
+
 def _structured_error(tool: str, exc: Exception) -> dict[str, Any]:
+    error_type = exc.__class__.__name__
+    error: dict[str, Any] = {
+        "type": error_type,
+        "error_type": error_type,
+        "message": str(exc),
+        "suggested_action": _suggested_action_for(exc),
+    }
+    if isinstance(exc, OptimisticConcurrencyError):
+        error.update(
+            {
+                "stream_id": exc.stream_id,
+                "expected_version": exc.expected,
+                "actual_version": exc.actual,
+                "suggested_action": "reload_stream_and_retry",
+            }
+        )
     return {
         "ok": False,
         "tool": tool,
-        "error": {
-            "type": exc.__class__.__name__,
-            "message": str(exc),
-        },
+        "error_type": error_type,
+        "message": str(exc),
+        "suggested_action": error["suggested_action"],
+        **{key: error[key] for key in ("stream_id", "expected_version", "actual_version") if key in error},
+        "error": error,
     }
 
 
@@ -235,8 +263,8 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_credit_analysis_completed", description="Append a completed credit analysis event.")
-    async def record_credit_analysis_completed(
+    @server.tool(name="record_credit_analysis", description="Append a completed credit analysis event.")
+    async def record_credit_analysis(
         application_id: str,
         session_id: str,
         agent_type: str = "credit_analysis",
@@ -258,7 +286,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         causation_id: str | None = None,
     ) -> dict[str, Any]:
         return await runtime._execute_command(
-            "record_credit_analysis_completed",
+            "record_credit_analysis",
             handle_credit_analysis_completed,
             {
                 "application_id": application_id,
@@ -283,8 +311,8 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_fraud_screening_completed", description="Append a completed fraud screening event.")
-    async def record_fraud_screening_completed(
+    @server.tool(name="record_fraud_screening", description="Append a completed fraud screening event.")
+    async def record_fraud_screening(
         application_id: str,
         session_id: str,
         fraud_score: float,
@@ -301,7 +329,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         causation_id: str | None = None,
     ) -> dict[str, Any]:
         return await runtime._execute_command(
-            "record_fraud_screening_completed",
+            "record_fraud_screening",
             handle_fraud_screening_completed,
             {
                 "application_id": application_id,
@@ -321,8 +349,8 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_compliance_check_completed", description="Append a completed compliance check.")
-    async def record_compliance_check_completed(
+    @server.tool(name="record_compliance_check", description="Append a completed compliance check.")
+    async def record_compliance_check(
         application_id: str,
         session_id: str,
         overall_verdict: str = "CLEAR",
@@ -346,7 +374,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         causation_id: str | None = None,
     ) -> dict[str, Any]:
         return await runtime._execute_command(
-            "record_compliance_check_completed",
+            "record_compliance_check",
             handle_compliance_check,
             {
                 "application_id": application_id,
@@ -425,8 +453,8 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="complete_human_review", description="Append a completed human review event.")
-    async def complete_human_review(
+    @server.tool(name="record_human_review", description="Append a completed human review event.")
+    async def record_human_review(
         application_id: str,
         reviewer_id: str,
         final_decision: str,
@@ -446,7 +474,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         causation_id: str | None = None,
     ) -> dict[str, Any]:
         return await runtime._execute_command(
-            "complete_human_review",
+            "record_human_review",
             handle_human_review_completed,
             {
                 "application_id": application_id,
@@ -469,6 +497,34 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
+    @server.tool(name="run_integrity_check", description="Run a read-only audit-chain integrity check.")
+    async def run_integrity_check_tool(
+        entity_type: str,
+        entity_id: str,
+    ) -> dict[str, Any]:
+        try:
+            result = await run_integrity_check(runtime.store, entity_type=entity_type, entity_id=entity_id)
+            audit_stream = f"audit-{entity_type}-{entity_id}"
+            audit_event = {
+                "event_type": "AuditIntegrityCheckRun",
+                "event_version": 1,
+                "payload": {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "check_timestamp": _utcnow(),
+                    "events_verified_count": result.events_verified,
+                    "integrity_hash": result.integrity_hash,
+                    "previous_hash": result.previous_hash,
+                    "chain_valid": result.chain_valid,
+                    "tamper_detected": result.tamper_detected,
+                },
+            }
+            current_version = await runtime.store.stream_version(audit_stream)
+            await runtime.store.append(audit_stream, [audit_event], expected_version=current_version)
+            return _structured_ok("run_integrity_check", result=result)
+        except Exception as exc:  # pragma: no cover - defensive wrapper
+            return _structured_error("run_integrity_check", exc)
+
     @server.tool(name="refresh_projections", description="Drain pending events into all projections.")
     async def refresh_projections(max_rounds: int = 32) -> dict[str, Any]:
         try:
@@ -478,16 +534,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             return _structured_error("refresh_projections", exc)
 
     @server.resource(
-        "ledger://projections/application-summaries",
-        name="application_summaries",
-        mime_type="application/json",
-        description="All application summary rows from the projection.",
-    )
-    async def application_summaries() -> list[dict[str, Any]]:
-        return _json_text(runtime.application_summary.all_rows())
-
-    @server.resource(
-        "ledger://projections/application-summaries/{application_id}",
+        "ledger://applications/{application_id}",
         name="application_summary",
         mime_type="application/json",
         description="Single application summary row from the projection.",
@@ -496,31 +543,91 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         return _json_text(runtime.application_summary.get_application(application_id))
 
     @server.resource(
-        "ledger://projections/compliance-audit/{application_id}",
-        name="compliance_audit",
+        "ledger://applications/{application_id}/compliance",
+        name="application_compliance",
         mime_type="application/json",
         description="Current compliance audit state for an application.",
     )
-    async def compliance_audit(application_id: str) -> dict[str, Any] | None:
-        return _json_text(runtime.compliance_audit.get_current_compliance(application_id))
-
     @server.resource(
-        "ledger://projections/compliance-audit/{application_id}/at/{timestamp}",
-        name="compliance_audit_at",
+        "ledger://applications/{application_id}/compliance?as_of={as_of}",
+        name="application_compliance_at",
         mime_type="application/json",
         description="Historical compliance audit snapshot for an application at a point in time.",
     )
-    async def compliance_audit_at(application_id: str, timestamp: str) -> dict[str, Any] | None:
-        return _json_text(runtime.compliance_audit.get_compliance_at(application_id, timestamp))
+    async def application_compliance(application_id: str, as_of: str | None = None) -> dict[str, Any] | None:
+        if as_of:
+            return _json_text(runtime.compliance_audit.get_compliance_at(application_id, as_of))
+        return _json_text(runtime.compliance_audit.get_current_compliance(application_id))
 
     @server.resource(
-        "ledger://projections/agent-performance",
+        "ledger://applications/{application_id}/audit-trail",
+        name="application_audit_trail",
+        mime_type="application/json",
+        description="Full audit-trail history for an application.",
+    )
+    @server.resource(
+        "ledger://applications/{application_id}/audit-trail?from={from_}&to={to}",
+        name="application_audit_trail_range",
+        mime_type="application/json",
+        description="Range-limited audit-trail history for an application.",
+    )
+    async def application_audit_trail(
+        application_id: str,
+        from_: int | None = None,
+        to: int | None = None,
+    ) -> list[dict[str, Any]]:
+        audit_stream = f"audit-loan-{application_id}"
+        events = await runtime.store.load_stream(
+            audit_stream,
+            from_position=int(from_ or 0),
+            to_position=int(to) if to is not None else None,
+        )
+        return _json_text(events)
+
+    @server.resource(
+        "ledger://agents/{agent_id}/performance",
         name="agent_performance",
         mime_type="application/json",
-        description="Aggregate performance metrics for agents.",
+        description="Aggregate performance metrics for one agent.",
     )
-    async def agent_performance() -> list[dict[str, Any]]:
-        return _json_text(runtime.agent_performance.all_rows())
+    async def agent_performance(agent_id: str) -> list[dict[str, Any]]:
+        rows = [row for row in runtime.agent_performance.all_rows() if row.get("agent_id") == agent_id]
+        return _json_text(rows)
+
+    @server.resource(
+        "ledger://agents/{agent_type}/sessions/{session_id}",
+        name="agent_session_replay",
+        mime_type="application/json",
+        description="Full replay for one agent session stream.",
+    )
+    async def agent_session_replay(agent_type: str, session_id: str) -> list[dict[str, Any]]:
+        stream_id = f"agent-{agent_type}-{session_id}"
+        return _json_text(await runtime.store.load_stream(stream_id))
+
+    @server.resource(
+        "ledger://ledger/health",
+        name="ledger_health",
+        mime_type="application/json",
+        description="Projection lag snapshot for the ledger runtime.",
+    )
+    async def ledger_health() -> dict[str, Any]:
+        lag_snapshot = runtime.get_lag_snapshot()
+        return _json_text(
+            {
+                "ok": True,
+                "p99_target_ms": 10,
+                "projections": lag_snapshot,
+            }
+        )
+
+    @server.resource(
+        "ledger://projections/application-summaries",
+        name="application_summaries",
+        mime_type="application/json",
+        description="All application summary rows from the projection.",
+    )
+    async def application_summaries() -> list[dict[str, Any]]:
+        return _json_text(runtime.application_summary.all_rows())
 
     @server.resource(
         "ledger://projections/manual-reviews",
