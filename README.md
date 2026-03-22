@@ -1,103 +1,74 @@
 # The Ledger
 
-Event-sourced multi-agent credit decision system for the Week 5 challenge.  
-This repository is implemented as a phased delivery track with test gates for each milestone.
+Event-sourced loan decisioning system for the Week 5 challenge.
 
-## What This Repository Includes
+The repository models a multi-step credit workflow with:
 
-- Event schema and validator for ledger domain events
-- Synthetic data generation pipeline (documents + seed events)
-- Phase-based tests to guide implementation
-- Scaffolding for:
-  - Event store and registry client
-  - Domain aggregates
-  - Agent pipeline
-  - Projections and upcasters
-  - MCP integration
+- append-only event streams
+- optimistic concurrency control
+- transactional outbox delivery
+- asynchronous projections with checkpoints
+- narrative and MCP-based acceptance tests
 
-Reference design notes are in `DESIGN.md`.
+If you want the rationale first, start with:
 
-## Architecture Snapshot
-
-The system follows event sourcing patterns:
-
-- `events` is the immutable source of truth
-- `event_streams` tracks per-stream version and lifecycle metadata
-- `projection_checkpoints` supports resumable projections
-- `outbox` enables reliable publication in the same transaction as event writes
-
-Stream position convention in this repository is **0-based**:
-
-- new stream version: `-1`
-- first event position: `0`
-- current stream version: last event position written
+- `DESIGN.md`
+- `ARCHITECTURE.md`
+- `DOMAIN_NOTES.md`
 
 ## Quick Start
 
-### One-command demo
+### Full stack with Docker
 
-If you have Docker installed, the fastest path is:
+This brings up PostgreSQL, the seeding job, the backend API, and the frontend:
 
 ```bash
 docker compose up --build
 ```
 
-That starts:
+Useful endpoints:
 
-- PostgreSQL on `localhost:5432`
-- the seeded Python API on `localhost:8000`
-- the frontend on `localhost:3000`
+- Backend API: `http://localhost:8000`
+- Frontend: `http://localhost:3000`
 
-The seed service loads the committed demo registry data and event history so the app is ready to browse right away.
-
-### 1. Install dependencies
+### Local Python setup
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Or with `uv` (locked):
+On PowerShell, use:
 
-```bash
-uv sync --all-groups
+```powershell
+$env:DATABASE_URL = "postgresql://postgres:apex@localhost/apex_ledger"
 ```
 
-### 2. Start PostgreSQL
-
-```bash
-docker run -d --name ledger-postgres -e POSTGRES_PASSWORD=apex -e POSTGRES_DB=apex_ledger -p 5432:5432 postgres:16
-```
-
-### 2b. Run database schema migration
+Create or reset the schema:
 
 ```bash
 psql postgresql://postgres:apex@localhost/apex_ledger -f src/schema.sql
+psql postgresql://postgres:apex@localhost/apex_ledger -f sql/event_store.sql
 ```
 
-### 3. Configure environment
+## Demo Flows
+
+Run the full pipeline for one application:
 
 ```bash
-cp .env.example .env
+python scripts/run_pipeline.py --app APEX-0007 --llm mock
 ```
 
-Set at minimum:
-
-- `ANTHROPIC_API_KEY`
-- `DATABASE_URL`
-
-### 4. Generate dataset and seed events
+Run the NARR-05 human-override demo and write artifacts:
 
 ```bash
-python datagen/generate_all.py --db-url postgresql://postgres:apex@localhost/apex_ledger
+python scripts/demo_narr05.py --output-dir artifacts
 ```
 
-### 5. Validate schema only (no DB write)
+The demo output includes a regulatory package JSON and a short narrative report.
 
-```bash
-python datagen/generate_all.py --skip-db --skip-docs --validate-only
-```
+## Testing
 
-### 6. Run test gates
+Run the main verification suite:
 
 ```bash
 pytest tests/test_schema_and_generator.py -v
@@ -106,78 +77,51 @@ pytest tests/test_narratives.py -v
 pytest tests/test_concurrency.py -v
 ```
 
-## Implementation Roadmap
-
-| Component | Primary Path | Phase |
-|---|---|---|
-| EventStore | `ledger/event_store.py` | 1 |
-| ApplicantRegistryClient | `ledger/registry/client.py` | 1 |
-| Domain aggregates | `ledger/domain/` | 2 |
-| Agent behavior | `ledger/agents/` | 2-3 |
-| Projections | `ledger/projections/` | 4 |
-| Upcasters | `ledger/upcasters.py` | 4 |
-| MCP server | `ledger/mcp_server.py` | 5 |
-
-## Project Layout
-
-```text
-.
-  src/              # Deliverable compatibility paths (schema, handlers, models)
-  datagen/          # Synthetic dataset and event generation
-  data/             # Generated artifacts
-  ledger/           # Core runtime and domain code
-  scripts/          # Utility scripts
-  sql/              # Database schema and setup
-  tests/            # Phase-based gates
-```
-
-## Environment Variables
-
-See `.env.example` for full values.
-
-- `ANTHROPIC_API_KEY`: model access key
-- `DATABASE_URL`: primary ledger database
-- `APPLICANT_REGISTRY_URL`: registry source
-- `DOCUMENTS_DIR`: local generated documents directory
-- `REGULATION_VERSION`: rule set version
-- `LOG_LEVEL`: runtime logging level
-- `LEDGER_API_KEYS`: optional comma-separated `role=token` pairs for API access control
-
-## Demo Access
-
-When `LEDGER_API_KEYS` is set, use the matching Bearer token for each screen:
-
-- `viewer`: applications list, application detail, and timeline
-- `reviewer`: review queue
-- `compliance`: compliance view
-- `analyst`: agent performance view
-- `admin`: all screens, including refresh
-
-The sample `.env.example` pairs `NEXT_PUBLIC_LEDGER_API_KEY=dev-viewer-key` with the viewer role so the default frontend can read the application screens without extra setup.
-
-## Testing Strategy
-
-Tests are organized to match phased delivery.  
-Recommended order:
+If you want the most important acceptance checks first, start with:
 
 ```bash
-pytest tests/test_schema_and_generator.py -v
-pytest tests/test_event_store.py -v
-pytest tests/test_registry_client.py -v
-pytest tests/test_credit_agent_registry_wiring.py -v
 pytest tests/test_narratives.py -v
+pytest tests/test_mcp_server.py -v
 ```
+
+## Repository Map
+
+```text
+ledger/     Core runtime, aggregates, projections, MCP, observability
+src/        Compatibility layer for schema, handlers, and shared models
+sql/        Database DDL for the event store
+datagen/    Synthetic document and event generation
+scripts/    Demo and pipeline entry points
+tests/      Phase, narrative, and regression coverage
+frontend/   React UI for the demo experience
+```
+
+## Core Concepts
+
+- `events` is the source of truth.
+- `event_streams` tracks versioning and lifecycle metadata.
+- `outbox` is written in the same transaction as event appends.
+- `projection_checkpoints` lets projections resume from the last processed position.
+- Aggregates rebuild state from history rather than storing a mutable current-state row.
+
+## Configuration
+
+Common environment variables:
+
+- `DATABASE_URL`
+- `TEST_DB_URL`
+- `ANTHROPIC_API_KEY`
+- `APPLICANT_REGISTRY_URL`
+- `DOCUMENTS_DIR`
+- `REGULATION_VERSION`
+- `LOG_LEVEL`
+- `LEDGER_API_KEYS`
+
+The sample values live in `.env.example`.
 
 ## Notes
 
-- `asyncpg` is optional at import time to keep in-memory testing lightweight.
-- Upcasters are expected to run on reads, not mutate persisted event records.
-- Keep append operations transaction-safe with optimistic concurrency checks.
-- To inspect a single application end-to-end, run `python scripts/audit_application.py --application-id APEX-0007`.
-- The script also writes a JSON artifact to `artifacts/audit-APEX-0007.json` by default.
-
-## Known Limitations
-
-- Security hardening is intentionally lightweight in this challenge build. The API supports API-key authentication and role-based authorization when `LEDGER_API_KEYS` is configured, but CORS remains permissive for demo convenience and the model is still not production-hardened.
-- Compliance state is projection-backed first and read-side reconstructed as a fallback when needed. That makes the system resilient during demos, but it still depends on projection freshness for the best experience.
-- Integrity verification is read-only now, which is the safer behavior for audit checks. If you want long-lived tamper evidence, the next step would be a dedicated immutable audit store rather than relying on the application event streams alone.
+- `src/schema.sql` is kept for schema/bootstrap compatibility.
+- `sql/event_store.sql` contains the dedicated event-store DDL.
+- `scripts/run_pipeline.py` can be run phase-by-phase with `--phase document|credit|fraud|compliance|decision|all`.
+- `scripts/demo_narr05.py` is the quickest way to exercise the human-override path end to end.
