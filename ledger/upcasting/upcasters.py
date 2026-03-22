@@ -40,7 +40,7 @@ def build_default_upcaster_registry() -> UpcasterRegistry:
         recorded_at = _parse_recorded_at(event.get("recorded_at"))
         next_payload.setdefault("model_version", _infer_legacy_model_version(recorded_at))
         next_payload.setdefault("confidence_score", None)
-        next_payload.setdefault("regulatory_basis", [])
+        next_payload.setdefault("regulatory_basis", None)
         return next_payload
 
     @registry.register("DecisionGenerated", from_version=1)

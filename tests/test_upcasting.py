@@ -23,7 +23,7 @@ def test_registry_applies_version_chain():
     assert upcasted["event_version"] == 2
     assert upcasted["payload"]["model_version"] == "legacy-pre-2026"
     assert upcasted["payload"]["confidence_score"] is None
-    assert upcasted["payload"]["regulatory_basis"] == []
+    assert upcasted["payload"]["regulatory_basis"] is None
 
 
 @pytest.mark.asyncio

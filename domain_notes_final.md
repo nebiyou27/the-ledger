@@ -247,6 +247,8 @@ Without OCC, two agents could both believe they are writing event #4, resulting 
 
 If many agents contend on the same stream, retries compound. This is why I split aggregates into separate streams (see Section 2) — the credit agent writes to `credit-{id}`, not `loan-{id}`, so it does not contend with the fraud agent.
 
+> **Implementation note:** The concurrency test in `tests/test_concurrency.py` proves the exact OCC error mechanism works correctly at the store level. The `_append_stream` retry-reload-inspect loop shown above is the handler-level strategy built on top of this infrastructure, designed to be verified once full agent pipelines are integrated.
+
 ---
 
 ## 4. Projection Lag and Consequences: The Stale-Read Problem
@@ -355,54 +357,34 @@ Three reasons:
 ### The Upcaster
 
 ```python
-class UpcasterRegistry:
-    def __init__(self):
-        self._upcasters = {}  # {event_type: {from_version: transform_fn}}
+# From ledger/upcasting/upcasters.py — the actual registered upcaster
 
-    def register(self, event_type: str, from_version: int, to_version: int):
-        def decorator(fn):
-            self._upcasters.setdefault(event_type, {})[from_version] = fn
-            return fn
-        return decorator
+def _infer_legacy_model_version(recorded_at: datetime) -> str:
+    """Coarse inference for events that predate model tracking."""
+    cutoff = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    return "legacy-pre-2026" if recorded_at < cutoff else "legacy-2026"
 
-    def upcast(self, event: dict) -> dict:
-        """Apply chain of upcasters until event reaches current version."""
-        event_type = event["event_type"]
-        version = event.get("event_version", 1)
-        chain = self._upcasters.get(event_type, {})
-        while version in chain:
-            event = dict(event)  # shallow copy — never mutate the input
-            event["payload"] = chain[version](dict(event["payload"]))
-            version += 1
-            event["event_version"] = version
-        return event
-
-
-registry = UpcasterRegistry()
-
-@registry.register("CreditDecisionMade", from_version=1, to_version=2)
-def upcast_credit_decision_v1_to_v2(payload: dict) -> dict:
-    """
-    v1: {application_id, decision, reason}
-    v2: {application_id, decision, reason, model_version, confidence_score, regulatory_basis}
-    """
-    payload.setdefault("model_version", None)
-    payload.setdefault("confidence_score", None)
-    payload.setdefault("regulatory_basis", None)
-    return payload
+@registry.register("CreditAnalysisCompleted", from_version=1)
+def _credit_v1_to_v2(payload, event, _registry):
+    next_payload = dict(payload or {})
+    recorded_at = _parse_recorded_at(event.get("recorded_at"))
+    next_payload.setdefault("model_version", _infer_legacy_model_version(recorded_at))
+    next_payload.setdefault("confidence_score", None)
+    next_payload.setdefault("regulatory_basis", None)
+    return next_payload
 ```
 
 ### Inference Strategy for Historical Events
 
-Each new field requires an explicit decision about what value to assign to events that predate it:
+Each new field requires an explicit decision about what value to assign to events that predate it. There are three categories:
 
-- **`model_version`:** Set to `None`, not a guess. We did not track this in 2024. `None` is truthful and queryable: `WHERE model_version IS NULL` cleanly selects "pre-tracking era" events.
+- **`model_version`:** Inferrable with documented uncertainty. We did not track the exact model version in 2024, but we know the deployment era from the event's `recorded_at` timestamp. The upcaster assigns `"legacy-pre-2026"` or `"legacy-2026"` — a coarse-grained era marker that is clearly distinguishable from real model identifiers (e.g., `claude-sonnet-4-20250514`). This is an annotated inference, not a fabricated value. Consumers can filter on `model_version LIKE 'legacy-%'` to identify pre-tracking-era events.
 
-- **`confidence_score`:** Set to `None`. Old decisions did not produce a numeric score. Backfilling `0.5` would look like a low-confidence decision, which is misleading. A regulator could ask "why was this 50% application approved?" and there would be no honest answer.
+- **`confidence_score`:** Genuinely unknown → `None`. Old decisions did not produce a numeric score. Backfilling `0.5` would look like a low-confidence decision, which is misleading. A regulator could ask "why was this 50% application approved?" and there would be no honest answer.
 
-- **`regulatory_basis`:** Set to `None` rather than `[]`. An empty list can be interpreted as "we checked and no regulations applied," which is too strong a claim for historical events that simply predate this tracking. `None` means "not recorded in this schema version," which is the truthful assertion. If consumers interpret `[]` as "we checked and none applied," that creates a false regulatory comfort for legacy decisions. `None` avoids this ambiguity.
+- **`regulatory_basis`:** Genuinely unknown → `None` rather than `[]`. An empty list can be interpreted as "we checked and no regulations applied," which is too strong a claim for historical events that simply predate this tracking. `None` means "not recorded in this schema version," which is the truthful assertion. If consumers interpret `[]` as "we checked and none applied," that creates a false regulatory comfort for legacy decisions. `None` avoids this ambiguity.
 
-The general principle: **`None` means "this field did not exist when this event was created."** Every consumer can handle that case explicitly. Fabricating a plausible-but-false value is always worse than admitting the data was not collected.
+The general principle: **`None` means genuinely unknown; annotated inference (like `"legacy-pre-2026"`) means we can deduce something useful but imprecise.** Every consumer can handle both cases explicitly. Fabricating a plausible-but-false value is always worse than admitting the data was not collected.
 
 ### How event_version Is Handled
 
@@ -428,7 +410,7 @@ Consumers of `load_stream()` always see v2 events. They never need to handle v1.
 If a third version is added later (v2 → v3), I register another upcaster:
 
 ```python
-@registry.register("CreditDecisionMade", from_version=2, to_version=3)
+@registry.register("CreditAnalysisCompleted", from_version=2, to_version=3)
 def upcast_credit_decision_v2_to_v3(payload: dict) -> dict:
     payload.setdefault("explainability_report_id", None)
     return payload
@@ -447,6 +429,8 @@ Marten 7.0 supports distributed projection execution across multiple nodes. How 
 ### Direct Answer
 
 I use **PostgreSQL advisory locks** to assign exclusive ownership of each projection to one worker at a time. Each projection maintains its own checkpoint (last processed `global_position`). If a worker crashes, the advisory lock is automatically released and another worker picks up from the last checkpoint. Distributed async projections are only safe under crash recovery if handlers are idempotent.
+
+> **Implementation status:** The current `ProjectionDaemon` in `ledger/projections/daemon.py` operates as a single-instance worker with checkpointing. The `ProjectionWorker` design below is the production-readiness evolution that adds distributed coordination via advisory locks. The single-instance daemon already implements the checkpoint-inside-transaction pattern that the distributed design depends on.
 
 ### Architecture Overview
 
