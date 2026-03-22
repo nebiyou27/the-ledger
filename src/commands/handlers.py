@@ -192,17 +192,16 @@ async def handle_credit_analysis_completed(store, command: dict[str, Any]) -> li
     loan = await LoanApplicationAggregate.load(store, application_id)
     session = await AgentSessionAggregate.load(store, _agent_stream_id(agent_type, session_id))
 
-    if not session.context_loaded:
-        raise DomainError("Agent context must be loaded before recording decisions")
+    session.assert_context_loaded()
     model_version = str(command["model_version"])
-    if session.model_version and session.model_version != model_version:
-        raise DomainError("Model version mismatch with AgentSession")
+    session.assert_model_version_matches(model_version)
 
     credit_stream = f"credit-{application_id}"
     existing_credit_events = await store.load_stream(credit_stream)
-    already_completed = any(ev.get("event_type") == "CreditAnalysisCompleted" for ev in existing_credit_events)
-    if already_completed and not bool(command.get("superseded_by_human_review", False)):
-        raise DomainError("CreditAnalysisCompleted already exists for this application")
+    loan.assert_can_record_credit_analysis_completed(
+        existing_credit_events=existing_credit_events,
+        superseded_by_human_review=bool(command.get("superseded_by_human_review", False)),
+    )
 
     decision = CreditDecision(
         risk_tier=RiskTier(str(command["risk_tier"])),
@@ -409,8 +408,7 @@ async def handle_generate_decision(store, command: dict[str, Any]) -> list[int]:
 
     recommendation = str(command["recommendation"]).upper()
     confidence = float(command["confidence"])
-    if confidence < 0.60:
-        recommendation = "REFER"
+    recommendation = loan.assert_can_generate_decision(recommendation, confidence)
 
     contributing_sessions = list(command.get("contributing_sessions", []))
     await _validate_contributing_sessions(store, application_id, contributing_sessions)

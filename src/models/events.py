@@ -33,6 +33,7 @@ class StoredEvent(BaseModel):
 class StreamMetadata(BaseModel):
     """Metadata record for a stream."""
 
+    stream_id: str
     aggregate_type: str
     current_version: int
     created_at: datetime | str | None = None

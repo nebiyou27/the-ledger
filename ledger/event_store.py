@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -17,14 +18,16 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only in lean local e
     asyncpg = None
 
 
+@dataclass(slots=True)
 class OptimisticConcurrencyError(Exception):
     """Raised when expected_version doesn't match the current stream version."""
 
-    def __init__(self, stream_id: str, expected: int, actual: int):
-        self.stream_id = stream_id
-        self.expected = expected
-        self.actual = actual
-        super().__init__(f"OCC on '{stream_id}': expected v{expected}, actual v{actual}")
+    stream_id: str
+    expected: int
+    actual: int
+
+    def __post_init__(self) -> None:
+        Exception.__init__(self, f"OCC on '{self.stream_id}': expected v{self.expected}, actual v{self.actual}")
 
 
 def _utcnow() -> datetime:
@@ -326,7 +329,7 @@ class EventStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT aggregate_type, current_version, created_at, archived_at, metadata "
+                "SELECT stream_id, aggregate_type, current_version, created_at, archived_at, metadata "
                 "FROM event_streams WHERE stream_id = $1",
                 stream_id,
             )

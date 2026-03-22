@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Callable
 
 from src.models.events import DomainError
 
@@ -30,6 +31,14 @@ class AgentSessionAggregate:
     output_events_written: int = 0
     events: list[dict] = field(default_factory=list)
 
+    def assert_context_loaded(self) -> None:
+        if not self.context_loaded:
+            raise DomainError("Agent session requires loaded context")
+
+    def assert_model_version_matches(self, model_version: str) -> None:
+        if self.model_version and str(model_version) != self.model_version:
+            raise DomainError("Agent session model version changed mid-session")
+
     @classmethod
     async def load(cls, store, stream_id: str) -> "AgentSessionAggregate":
         agg = cls(stream_id=stream_id)
@@ -52,69 +61,76 @@ class AgentSessionAggregate:
         # Gas Town invariant: first event must declare context.
         if self.state == AgentSessionState.NEW and event_type != "AgentSessionStarted":
             raise DomainError("AgentSession must start with AgentSessionStarted")
+        handler = self._event_handlers().get(event_type)
+        if handler is not None:
+            handler(payload)
 
-        if event_type == "AgentSessionStarted":
-            if self.state != AgentSessionState.NEW:
-                raise DomainError("Duplicate AgentSessionStarted event")
-            self.session_id = payload.get("session_id")
-            self.agent_type = str(payload.get("agent_type") or "")
-            self.agent_id = payload.get("agent_id")
-            self.application_id = payload.get("application_id")
-            self.model_version = payload.get("model_version")
-            self.context_source = payload.get("context_source")
-            self.context_loaded = bool(self.context_source)
-            self.state = AgentSessionState.STARTED
-            return
+    def _event_handlers(self) -> dict[str, Callable[[dict], None]]:
+        return {
+            "AgentSessionStarted": self._apply_agent_session_started,
+            "AgentNodeExecuted": self._apply_agent_node_executed,
+            "AgentToolCalled": self._apply_agent_tool_called,
+            "AgentOutputWritten": self._apply_agent_output_written,
+            "AgentSessionCompleted": self._apply_agent_session_completed,
+            "AgentSessionFailed": self._apply_agent_session_failed,
+            "AgentSessionRecovered": self._apply_agent_session_recovered,
+            "AgentInputValidated": self._apply_agent_input_validated,
+            "AgentInputValidationFailed": self._apply_agent_input_validation_failed,
+        }
 
-        if self.state in (AgentSessionState.COMPLETED, AgentSessionState.FAILED):
-            # Recovery is the only event allowed after a terminal state.
-            if event_type != "AgentSessionRecovered":
-                raise DomainError(f"Cannot append {event_type} after terminal state {self.state.value}")
+    def _apply_agent_session_started(self, payload: dict) -> None:
+        if self.state != AgentSessionState.NEW:
+            raise DomainError("Duplicate AgentSessionStarted event")
+        self.session_id = payload.get("session_id")
+        self.agent_type = str(payload.get("agent_type") or "")
+        self.agent_id = payload.get("agent_id")
+        self.application_id = payload.get("application_id")
+        self.model_version = payload.get("model_version")
+        self.context_source = payload.get("context_source")
+        self.context_loaded = bool(self.context_source)
+        self.state = AgentSessionState.STARTED
 
-        # Validate identity continuity in-stream.
+    def _validate_identity(self, payload: dict) -> None:
         if payload.get("session_id") and self.session_id and payload.get("session_id") != self.session_id:
             raise DomainError("Mismatched session_id in AgentSession stream")
         if payload.get("agent_type") and self.agent_type and str(payload.get("agent_type")) != self.agent_type:
             raise DomainError("Mismatched agent_type in AgentSession stream")
 
-        if event_type == "AgentNodeExecuted":
-            self._require_context(event_type)
-            self.node_count += 1
-            return
+    def _apply_agent_node_executed(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.node_count += 1
 
-        if event_type == "AgentToolCalled":
-            self._require_context(event_type)
-            self.tool_calls += 1
-            return
+    def _apply_agent_tool_called(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.tool_calls += 1
 
-        if event_type == "AgentOutputWritten":
-            self._require_context(event_type)
-            self.output_events_written += len(payload.get("events_written") or [])
-            return
+    def _apply_agent_output_written(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.output_events_written += len(payload.get("events_written") or [])
 
-        if event_type == "AgentSessionCompleted":
-            self._require_context(event_type)
-            # Model-version locking: if event carries a version-like field, it must match.
-            payload_model_version = payload.get("model_version")
-            if payload_model_version and self.model_version and payload_model_version != self.model_version:
-                raise DomainError("Agent session model version changed mid-session")
-            self.state = AgentSessionState.COMPLETED
-            return
+    def _apply_agent_session_completed(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.assert_model_version_matches(str(payload.get("model_version") or self.model_version or ""))
+        self.state = AgentSessionState.COMPLETED
 
-        if event_type == "AgentSessionFailed":
-            self._require_context(event_type)
-            self.state = AgentSessionState.FAILED
-            return
+    def _apply_agent_session_failed(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.state = AgentSessionState.FAILED
 
-        if event_type == "AgentSessionRecovered":
-            self._require_context(event_type)
-            self.state = AgentSessionState.STARTED
-            return
+    def _apply_agent_session_recovered(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.state = AgentSessionState.STARTED
 
-        if event_type in ("AgentInputValidated", "AgentInputValidationFailed"):
-            self._require_context(event_type)
-            return
+    def _apply_agent_input_validated(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
 
-    def _require_context(self, event_type: str) -> None:
-        if not self.context_loaded:
-            raise DomainError(f"{event_type} requires loaded context")
+    def _apply_agent_input_validation_failed(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()

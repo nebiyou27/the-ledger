@@ -25,24 +25,31 @@ async def test_double_decision_concurrency_expected_version_3():
 
     assert await store.stream_version(stream_id) == 3
 
-    async def attempt() -> str:
-        try:
-            await store.append(
-                stream_id,
-                [_ev("DecisionGenerated", recommendation="APPROVE", confidence=0.82)],
-                expected_version=3,
-            )
-            return "success"
-        except OptimisticConcurrencyError:
-            return "occ"
+    task_a = asyncio.create_task(
+        store.append(
+            stream_id,
+            [_ev("DecisionGenerated", recommendation="APPROVE", confidence=0.82)],
+            expected_version=3,
+        )
+    )
+    task_b = asyncio.create_task(
+        store.append(
+            stream_id,
+            [_ev("DecisionGenerated", recommendation="APPROVE", confidence=0.82)],
+            expected_version=3,
+        )
+    )
 
-    outcomes = await asyncio.gather(attempt(), attempt())
-    assert outcomes.count("success") == 1
-    assert outcomes.count("occ") == 1
+    outcomes = await asyncio.gather(task_a, task_b, return_exceptions=True)
+    successes = [result for result in outcomes if isinstance(result, list)]
+    failures = [result for result in outcomes if isinstance(result, OptimisticConcurrencyError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], OptimisticConcurrencyError)
 
     events = await store.load_stream(stream_id)
-    # This repo uses 0-based stream positions, so final length is 5 (version 4).
     assert len(events) == 5
+    assert events[-1]["stream_position"] == 4
     assert await store.stream_version(stream_id) == 4
 
 
