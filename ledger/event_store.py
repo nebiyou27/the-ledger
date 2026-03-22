@@ -26,6 +26,10 @@ class OptimisticConcurrencyError(Exception):
     expected: int
     actual: int
 
+    @classmethod
+    def from_versions(cls, stream_id: str, expected: int, actual: int) -> "OptimisticConcurrencyError":
+        return cls(stream_id=stream_id, expected=expected, actual=actual)
+
     def __post_init__(self) -> None:
         Exception.__init__(self, f"OCC on '{self.stream_id}': expected v{self.expected}, actual v{self.actual}")
 
@@ -136,7 +140,7 @@ class EventStore:
 
                 current = row["current_version"] if row else -1
                 if current != expected_version:
-                    raise OptimisticConcurrencyError(stream_id, expected_version, current)
+                    raise OptimisticConcurrencyError.from_versions(stream_id, expected_version, current)
 
                 if row and row["archived_at"] is not None:
                     raise ValueError(f"Cannot append to archived stream '{stream_id}'")
@@ -425,7 +429,7 @@ class InMemoryEventStore:
         async with self._locks[stream_id]:
             current = self._versions.get(stream_id, -1)
             if current != expected_version:
-                raise OptimisticConcurrencyError(stream_id, expected_version, current)
+                raise OptimisticConcurrencyError.from_versions(stream_id, expected_version, current)
 
             stream_meta = self._stream_metadata.get(stream_id)
             if stream_meta and stream_meta.get("archived_at") is not None:

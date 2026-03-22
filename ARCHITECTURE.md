@@ -2,7 +2,7 @@
 
 ## Overview
 
-This diagram shows the command-write path and projection read path of the event-sourced loan processing system. The PostgreSQL `events` table is the central persistence layer. All aggregate state is reconstructed from event streams on demand — there is no separate "current state" table. The `outbox` table is written inside the **same database transaction** as the event append, guaranteeing at-least-once downstream delivery without dual-write risk.
+This diagram shows the command-write path and projection read path of the event-sourced loan processing system. The PostgreSQL `events` table is the central persistence layer. All aggregate state is reconstructed from event streams on demand - there is no separate "current state" table. The `outbox` table is written inside the **same database transaction** as the event append, guaranteeing at-least-once downstream delivery without dual-write risk.
 
 Three aggregate boundaries are shown, each with its own stream and consistency domain:
 
@@ -39,7 +39,7 @@ flowchart TD
 
     subgraph TX["PostgreSQL Transaction — single atomic unit"]
         direction TB
-        VersionCheck["event_streams\nSELECT … FOR UPDATE\ncurrent_version vs expected_version\n❌ Mismatch → OptimisticConcurrencyError"]
+        VersionCheck["event_streams\nSELECT ... FOR UPDATE\ncurrent_version vs expected_version\nstream_id + archived_at metadata\n❌ Mismatch -> OptimisticConcurrencyError"]
         InsertEvent["events table\nINSERT (stream_id, stream_position=N+1,\nevent_type, payload, recorded_at)"]
         InsertOutbox["outbox table\nINSERT (event_id, destination,\npayload) — SAME transaction"]
         UpdateVersion["event_streams\nUPDATE current_version = N+1"]

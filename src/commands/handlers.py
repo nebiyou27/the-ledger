@@ -67,6 +67,163 @@ def _agent_stream_id(agent_type: str, session_id: str) -> str:
     return f"agent-{agent_type}-{session_id}"
 
 
+def _compliance_completion_event(
+    application_id: str,
+    session_id: str,
+    command: dict[str, Any],
+    verdict: str,
+    completed_at: datetime,
+    rules_seen: int,
+) -> dict[str, Any]:
+    return ComplianceCheckCompleted(
+        application_id=application_id,
+        session_id=session_id,
+        rules_evaluated=int(command.get("rules_evaluated", rules_seen)),
+        rules_passed=int(command.get("rules_passed_count", len(command.get("rules_passed", [])))),
+        rules_failed=int(command.get("rules_failed_count", len(command.get("rules_failed", [])))),
+        rules_noted=int(command.get("rules_noted_count", len(command.get("rules_noted", [])))),
+        has_hard_block=bool(command.get("has_hard_block", verdict == "BLOCKED")),
+        overall_verdict=ComplianceVerdict(verdict),
+        completed_at=completed_at,
+    ).to_store_dict()
+
+
+def _compliance_followup_events(
+    application_id: str,
+    command: dict[str, Any],
+    verdict: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    events = [
+        _compliance_completion_event(
+            application_id=application_id,
+            session_id=str(command["session_id"]),
+            command=command,
+            verdict=verdict,
+            completed_at=now,
+            rules_seen=len(command.get("rules_passed", []))
+            + len(command.get("rules_failed", []))
+            + len(command.get("rules_noted", [])),
+        )
+    ]
+
+    if verdict in ("CLEAR", "CONDITIONAL"):
+        events.append(
+            DecisionRequested(
+                application_id=application_id,
+                requested_at=now,
+                all_analyses_complete=True,
+                triggered_by_event_id=str(command.get("triggered_by_event_id", "compliance-check-completed")),
+            ).to_store_dict()
+        )
+    else:
+        events.append(
+            ApplicationDeclined(
+                application_id=application_id,
+                decline_reasons=list(command.get("decline_reasons", ["Compliance hard block"])),
+                declined_by=str(command.get("declined_by", "compliance_agent")),
+                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
+                adverse_action_codes=list(command.get("adverse_action_codes", ["COMPLIANCE_BLOCK"])),
+                declined_at=now,
+            ).to_store_dict()
+        )
+    return events
+
+
+def _decision_followup_events(
+    application_id: str,
+    command: dict[str, Any],
+    recommendation: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    events = [
+        DecisionGenerated(
+            application_id=application_id,
+            orchestrator_session_id=str(command["orchestrator_session_id"]),
+            recommendation=recommendation,
+            confidence=float(command["confidence"]),
+            approved_amount_usd=_as_decimal(command["approved_amount_usd"])
+            if command.get("approved_amount_usd") is not None
+            else None,
+            conditions=list(command.get("conditions", [])),
+            executive_summary=str(command.get("executive_summary", "")),
+            key_risks=list(command.get("key_risks", [])),
+            contributing_sessions=list(command.get("contributing_sessions", [])),
+            model_versions=dict(command.get("model_versions", {})),
+            generated_at=now,
+        ).to_store_dict()
+    ]
+
+    if recommendation == "APPROVE":
+        events.append(
+            ApplicationApproved(
+                application_id=application_id,
+                approved_amount_usd=_as_decimal(command["approved_amount_usd"]),
+                interest_rate_pct=float(command.get("interest_rate_pct", 12.5)),
+                term_months=int(command.get("term_months", 36)),
+                conditions=list(command.get("conditions", [])),
+                approved_by=str(command.get("approved_by", "auto")),
+                effective_date=str(command.get("effective_date", now.date().isoformat())),
+                approved_at=now,
+            ).to_store_dict()
+        )
+    elif recommendation == "DECLINE":
+        events.append(
+            ApplicationDeclined(
+                application_id=application_id,
+                decline_reasons=list(command.get("decline_reasons", ["Risk policy decline"])),
+                declined_by=str(command.get("declined_by", "decision_orchestrator")),
+                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
+                adverse_action_codes=list(command.get("adverse_action_codes", [])),
+                declined_at=now,
+            ).to_store_dict()
+        )
+    else:
+        events.append(
+            HumanReviewRequested(
+                application_id=application_id,
+                reason=str(command.get("review_reason", "Recommendation REFER or low confidence")),
+                decision_event_id=str(command.get("decision_event_id", "pending")),
+                assigned_to=command.get("assigned_to"),
+                requested_at=now,
+            ).to_store_dict()
+        )
+    return events
+
+
+def _review_outcome_events(
+    application_id: str,
+    command: dict[str, Any],
+    final_decision: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    if final_decision == "APPROVE":
+        return [
+            ApplicationApproved(
+                application_id=application_id,
+                approved_amount_usd=_as_decimal(command["approved_amount_usd"]),
+                interest_rate_pct=float(command.get("interest_rate_pct", 12.5)),
+                term_months=int(command.get("term_months", 36)),
+                conditions=list(command.get("conditions", [])),
+                approved_by=str(command.get("reviewer_id")),
+                effective_date=str(command.get("effective_date", now.date().isoformat())),
+                approved_at=now,
+            ).to_store_dict()
+        ]
+    if final_decision == "DECLINE":
+        return [
+            ApplicationDeclined(
+                application_id=application_id,
+                decline_reasons=list(command.get("decline_reasons", ["Human reviewer decline"])),
+                declined_by=str(command.get("reviewer_id")),
+                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
+                adverse_action_codes=list(command.get("adverse_action_codes", [])),
+                declined_at=now,
+            ).to_store_dict()
+        ]
+    return []
+
+
 async def _validate_contributing_sessions(
     store,
     application_id: str,
@@ -302,55 +459,20 @@ async def handle_compliance_check(store, command: dict[str, Any]) -> list[int]:
 
     verdict = str(command.get("overall_verdict", "CLEAR")).upper()
     compliance_events.append(
-        ComplianceCheckCompleted(
+        _compliance_completion_event(
             application_id=application_id,
             session_id=session_id,
-            rules_evaluated=int(command.get("rules_evaluated", len(compliance_events))),
-            rules_passed=int(command.get("rules_passed_count", len(command.get("rules_passed", [])))),
-            rules_failed=int(command.get("rules_failed_count", len(command.get("rules_failed", [])))),
-            rules_noted=int(command.get("rules_noted_count", len(command.get("rules_noted", [])))),
-            has_hard_block=bool(command.get("has_hard_block", verdict == "BLOCKED")),
-            overall_verdict=ComplianceVerdict(verdict),
+            command=command,
+            verdict=verdict,
             completed_at=now,
-        ).to_store_dict()
+            rules_seen=len(compliance_events),
+        )
     )
 
     written = await store.append(compliance_stream, compliance_events, expected_version=compliance_version)
 
     loan = await LoanApplicationAggregate.load(store, application_id)
-    next_events = [
-        ComplianceCheckCompleted(
-            application_id=application_id,
-            session_id=session_id,
-            rules_evaluated=int(command.get("rules_evaluated", len(compliance_events))),
-            rules_passed=int(command.get("rules_passed_count", len(command.get("rules_passed", [])))),
-            rules_failed=int(command.get("rules_failed_count", len(command.get("rules_failed", [])))),
-            rules_noted=int(command.get("rules_noted_count", len(command.get("rules_noted", [])))),
-            has_hard_block=bool(command.get("has_hard_block", verdict == "BLOCKED")),
-            overall_verdict=ComplianceVerdict(verdict),
-            completed_at=now,
-        ).to_store_dict()
-    ]
-    if verdict in ("CLEAR", "CONDITIONAL"):
-        next_events.append(
-            DecisionRequested(
-                application_id=application_id,
-                requested_at=now,
-                all_analyses_complete=True,
-                triggered_by_event_id=str(command.get("triggered_by_event_id", "compliance-check-completed")),
-            ).to_store_dict()
-        )
-    else:
-        next_events.append(
-            ApplicationDeclined(
-                application_id=application_id,
-                decline_reasons=list(command.get("decline_reasons", ["Compliance hard block"])),
-                declined_by=str(command.get("declined_by", "compliance_agent")),
-                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
-                adverse_action_codes=list(command.get("adverse_action_codes", ["COMPLIANCE_BLOCK"])),
-                declined_at=now,
-            ).to_store_dict()
-        )
+    next_events = _compliance_followup_events(application_id, command, verdict, now)
     _replay_loan_validation(loan, next_events)
     await store.append(f"loan-{application_id}", next_events, expected_version=loan.version)
     return written
@@ -414,58 +536,9 @@ async def handle_generate_decision(store, command: dict[str, Any]) -> list[int]:
     await _validate_contributing_sessions(store, application_id, contributing_sessions)
 
     now = _as_datetime(command.get("generated_at"))
-    decision_event = DecisionGenerated(
-        application_id=application_id,
-        orchestrator_session_id=str(command["orchestrator_session_id"]),
-        recommendation=recommendation,
-        confidence=confidence,
-        approved_amount_usd=_as_decimal(command["approved_amount_usd"])
-        if command.get("approved_amount_usd") is not None
-        else None,
-        conditions=list(command.get("conditions", [])),
-        executive_summary=str(command.get("executive_summary", "")),
-        key_risks=list(command.get("key_risks", [])),
-        contributing_sessions=contributing_sessions,
-        model_versions=dict(command.get("model_versions", {})),
-        generated_at=now,
-    ).to_store_dict()
-
-    events = [decision_event]
+    events = _decision_followup_events(application_id, command, recommendation, now)
     if recommendation == "APPROVE":
         await _ensure_compliance_ready_for_approval(store, application_id)
-        events.append(
-            ApplicationApproved(
-                application_id=application_id,
-                approved_amount_usd=_as_decimal(command["approved_amount_usd"]),
-                interest_rate_pct=float(command.get("interest_rate_pct", 12.5)),
-                term_months=int(command.get("term_months", 36)),
-                conditions=list(command.get("conditions", [])),
-                approved_by=str(command.get("approved_by", "auto")),
-                effective_date=str(command.get("effective_date", now.date().isoformat())),
-                approved_at=now,
-            ).to_store_dict()
-        )
-    elif recommendation == "DECLINE":
-        events.append(
-            ApplicationDeclined(
-                application_id=application_id,
-                decline_reasons=list(command.get("decline_reasons", ["Risk policy decline"])),
-                declined_by=str(command.get("declined_by", "decision_orchestrator")),
-                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
-                adverse_action_codes=list(command.get("adverse_action_codes", [])),
-                declined_at=now,
-            ).to_store_dict()
-        )
-    else:
-        events.append(
-            HumanReviewRequested(
-                application_id=application_id,
-                reason=str(command.get("review_reason", "Recommendation REFER or low confidence")),
-                decision_event_id=str(command.get("decision_event_id", "pending")),
-                assigned_to=command.get("assigned_to"),
-                requested_at=now,
-            ).to_store_dict()
-        )
 
     _replay_loan_validation(loan, events)
     return await store.append(
@@ -497,29 +570,7 @@ async def handle_human_review_completed(store, command: dict[str, Any]) -> list[
 
     if final_decision == "APPROVE":
         await _ensure_compliance_ready_for_approval(store, application_id)
-        events.append(
-            ApplicationApproved(
-                application_id=application_id,
-                approved_amount_usd=_as_decimal(command["approved_amount_usd"]),
-                interest_rate_pct=float(command.get("interest_rate_pct", 12.5)),
-                term_months=int(command.get("term_months", 36)),
-                conditions=list(command.get("conditions", [])),
-                approved_by=str(command.get("reviewer_id")),
-                effective_date=str(command.get("effective_date", now.date().isoformat())),
-                approved_at=now,
-            ).to_store_dict()
-        )
-    elif final_decision == "DECLINE":
-        events.append(
-            ApplicationDeclined(
-                application_id=application_id,
-                decline_reasons=list(command.get("decline_reasons", ["Human reviewer decline"])),
-                declined_by=str(command.get("reviewer_id")),
-                adverse_action_notice_required=bool(command.get("adverse_action_notice_required", True)),
-                adverse_action_codes=list(command.get("adverse_action_codes", [])),
-                declined_at=now,
-            ).to_store_dict()
-        )
+    events.extend(_review_outcome_events(application_id, command, final_decision, now))
 
     _replay_loan_validation(loan, events)
     return await store.append(
