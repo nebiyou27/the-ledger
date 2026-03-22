@@ -12,7 +12,7 @@ from datetime import datetime
 from uuid import uuid4
 from ledger.agents.llm_adapter import LLMClient, OllamaClient
 from langgraph.graph import StateGraph, END
-from ledger.domain.aggregates.agent_session import AgentSessionAggregate
+from ledger.domain.aggregates.agent_session import AgentSessionAggregate, AgentSessionState
 
 LANGGRAPH_VERSION = "1.0.0"
 MAX_OCC_RETRIES = 5
@@ -48,31 +48,50 @@ class BaseApexAgent(ABC):
         """
         from ledger.exceptions import OptimisticConcurrencyError
         last_exception = None
-        for attempt in range(MAX_OCC_RETRIES):
-            if not self._graph:
-                self._graph = self.build_graph()
-            self.application_id = application_id
-            self.session_id = f"sess-{self.agent_type[:3]}-{uuid4().hex[:8]}"
-            self._session_stream = f"agent-{self.agent_type}-{self.session_id}"
-            self._t0 = time.time(); self._seq = 0; self._llm_calls = 0; self._tokens = 0; self._cost = 0.0
+        # Session initialization (run once)
+        if not self._graph:
+            self._graph = self.build_graph()
+        self.application_id = application_id
+        self.session_id = f"sess-{self.agent_type[:3]}-{uuid4().hex[:8]}"
+        self._session_stream = f"agent-{self.agent_type}-{self.session_id}"
+        self._t0 = time.time()
+        self._seq = 0
+        self._llm_calls = 0
+        self._tokens = 0
+        self._cost = 0.0
+        try:
             await self._start_session(application_id)
+        except OptimisticConcurrencyError as occ:
+            await self._fail_session("OptimisticConcurrencyError", str(occ))
+            raise
+        except Exception as e:
+            await self._fail_session(type(e).__name__, str(e))
+            raise
+        for attempt in range(MAX_OCC_RETRIES):
             try:
                 result = await self._graph.ainvoke(self._initial_state(application_id))
                 await self._complete_session(result)
                 return
             except OptimisticConcurrencyError as occ:
                 last_exception = occ
-                # OCC: reload and retry the whole decision
                 await asyncio.sleep(0.1 * (2 ** attempt))
                 continue
             except Exception as e:
+                # Unwrap OCC if wrapped by LangGraph or other framework
+                occ = None
+                if hasattr(e, '__cause__') and isinstance(e.__cause__, OptimisticConcurrencyError):
+                    occ = e.__cause__
+                elif hasattr(e, '__context__') and isinstance(e.__context__, OptimisticConcurrencyError):
+                    occ = e.__context__
+                if occ is not None:
+                    last_exception = occ
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+                    continue
                 await self._fail_session(type(e).__name__, str(e))
                 raise
-        # If we get here, OCC failed all retries
         if last_exception:
             await self._fail_session("OptimisticConcurrencyError", str(last_exception))
             raise last_exception
-
     def _initial_state(self, app_id):
         return {"application_id": app_id, "session_id": self.session_id,
                 "agent_id": self.agent_id, "errors": [], "output_events_written": [], "next_agent_triggered": None}
@@ -113,6 +132,9 @@ class BaseApexAgent(ABC):
             "next_agent_triggered":result.get("next_agent_triggered"),"completed_at":datetime.now().isoformat()}})
 
     async def _fail_session(self, etype, emsg):
+        agg = await AgentSessionAggregate.load(self.store, self._session_stream)
+        if agg.state == AgentSessionState.NEW:
+            return
         await self._append_session({"event_type":"AgentSessionFailed","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
             "error_type":etype,"error_message":emsg[:500],"last_successful_node":f"node_{self._seq}",
@@ -131,16 +153,18 @@ class BaseApexAgent(ABC):
         """Backward-compatible wrapper for single-event append."""
         await self._append_with_retry(stream_id, [event_dict], causation_id=causation_id)
 
-    async def _append_with_retry(self, stream_id: str, events: list[dict], causation_id: str = None):
-        """Append one or more events with OCC retry."""
-        for attempt in range(MAX_OCC_RETRIES):
+    async def _append_with_retry(self, stream_id: str, events: list[dict], causation_id: str = None, max_retries: int = None):
+        """Append one or more events with OCC retry. max_retries=0 disables internal retry."""
+        if max_retries is None:
+            max_retries = MAX_OCC_RETRIES
+        for attempt in range(max_retries if max_retries > 0 else 1):
             try:
                 ver = await self.store.stream_version(stream_id)
                 positions = await self.store.append(stream_id=stream_id, events=events,
                     expected_version=ver, causation_id=causation_id)
                 return positions
             except Exception as e:
-                if "OptimisticConcurrencyError" in type(e).__name__ and attempt < MAX_OCC_RETRIES-1:
+                if "OptimisticConcurrencyError" in type(e).__name__ and max_retries > 0 and attempt < max_retries-1:
                     await asyncio.sleep(0.1 * (2**attempt)); continue
                 raise
 
