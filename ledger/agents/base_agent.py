@@ -42,17 +42,36 @@ class BaseApexAgent(ABC):
     def build_graph(self): raise NotImplementedError
 
     async def process_application(self, application_id: str) -> None:
-        if not self._graph: self._graph = self.build_graph()
-        self.application_id = application_id
-        self.session_id = f"sess-{self.agent_type[:3]}-{uuid4().hex[:8]}"
-        self._session_stream = f"agent-{self.agent_type}-{self.session_id}"
-        self._t0 = time.time(); self._seq = 0; self._llm_calls = 0; self._tokens = 0; self._cost = 0.0
-        await self._start_session(application_id)
-        try:
-            result = await self._graph.ainvoke(self._initial_state(application_id))
-            await self._complete_session(result)
-        except Exception as e:
-            await self._fail_session(type(e).__name__, str(e)); raise
+        """
+        Process an application with full OCC retry: if an OptimisticConcurrencyError occurs,
+        reloads state and retries the entire decision process up to MAX_OCC_RETRIES times.
+        """
+        from ledger.exceptions import OptimisticConcurrencyError
+        last_exception = None
+        for attempt in range(MAX_OCC_RETRIES):
+            if not self._graph:
+                self._graph = self.build_graph()
+            self.application_id = application_id
+            self.session_id = f"sess-{self.agent_type[:3]}-{uuid4().hex[:8]}"
+            self._session_stream = f"agent-{self.agent_type}-{self.session_id}"
+            self._t0 = time.time(); self._seq = 0; self._llm_calls = 0; self._tokens = 0; self._cost = 0.0
+            await self._start_session(application_id)
+            try:
+                result = await self._graph.ainvoke(self._initial_state(application_id))
+                await self._complete_session(result)
+                return
+            except OptimisticConcurrencyError as occ:
+                last_exception = occ
+                # OCC: reload and retry the whole decision
+                await asyncio.sleep(0.1 * (2 ** attempt))
+                continue
+            except Exception as e:
+                await self._fail_session(type(e).__name__, str(e))
+                raise
+        # If we get here, OCC failed all retries
+        if last_exception:
+            await self._fail_session("OptimisticConcurrencyError", str(last_exception))
+            raise last_exception
 
     def _initial_state(self, app_id):
         return {"application_id": app_id, "session_id": self.session_id,
