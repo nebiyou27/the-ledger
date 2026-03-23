@@ -25,6 +25,25 @@ Additional domain streams: `credit-{id}`, `fraud-{id}`, `docpkg-{id}`, `audit-{i
 - Projections are asynchronous, checkpointed, and restart from the last saved global position.
 - Event naming policy lives in `EVENT_SCHEMA_REFERENCE.md#event-naming-conventions` and is enforced by `tests/test_event_naming.py`.
 
+## Stream Naming Conventions
+
+Stream IDs are durable contracts, so every family needs a stable prefix and a
+single, predictable shape.
+
+Current stream families:
+
+- `loan-{application_id}` for loan application history.
+- `docpkg-{application_id}` for document package history.
+- `credit-{application_id}` for credit record history.
+- `fraud-{application_id}` for fraud screening history.
+- `compliance-{application_id}` for compliance record history.
+- `agent-{agent_type}-{session_id}` for agent session history.
+- `audit-{entity_id}` for direct integrity ledger streams.
+- `audit-{entity_type}-{entity_id}` and `audit-loan-{application_id}` for
+  exposed audit-trail streams.
+
+The policy is enforced by `tests/test_stream_naming.py`.
+
 ---
 
 ## Command-Write Path

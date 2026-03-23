@@ -125,5 +125,6 @@ The sample values live in `.env.example`.
 - `src/schema.sql` is kept for schema/bootstrap compatibility.
 - `sql/event_store.sql` contains the dedicated event-store DDL.
 - `EVENT_SCHEMA_REFERENCE.md` documents the canonical event payloads and their versioned compatibility rules.
+- `ARCHITECTURE.md#stream-naming-conventions` documents the canonical stream IDs, enforced by `tests/test_stream_naming.py`.
 - `scripts/run_pipeline.py` can be run phase-by-phase with `--phase document|credit|fraud|compliance|decision|all`.
 - `scripts/demo_narr05.py` is the quickest way to exercise the human-override path end to end.
