@@ -67,6 +67,10 @@ python scripts/demo_narr05.py --output-dir artifacts
 
 The demo output includes a regulatory package JSON and a short narrative report.
 
+## Scripts
+
+- `scripts/replay_projection.py` clears a projection checkpoint and replays that projection from `global_position = 0`; it requires `--confirm` to protect the current projection state.
+
 ## Testing
 
 Run the main verification suite:
