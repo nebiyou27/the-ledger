@@ -55,7 +55,7 @@ def test_agent_session_snapshot_updates_checkpoint_state():
         "context_source": "fresh",
     }))
     agg.apply(_ev("AgentNodeExecuted", {"session_id": "sess-1", "agent_type": "credit_analysis"}))
-    agg.apply(_ev("AgentSessionSnapshot", {
+    agg.apply(_ev("AgentSessionSnapshotted", {
         "session_id": "sess-1",
         "agent_type": "credit_analysis",
         "application_id": "APEX-1",

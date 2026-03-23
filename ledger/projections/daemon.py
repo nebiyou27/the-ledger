@@ -25,6 +25,7 @@ class ProjectionDaemon:
         self._running = False
         self._stop_event = asyncio.Event()
         self._errors: dict[str, int] = {p.name: 0 for p in projections}
+        self._dead_letters: dict[str, int] = {p.name: 0 for p in projections}
 
     async def run_forever(self, poll_interval_ms: int = 100, batch_size: int = 500) -> None:
         self._running = True
@@ -77,10 +78,16 @@ class ProjectionDaemon:
 
                 handled = projection.handles(str(event.get("event_type")))
                 if handled:
-                    applied = await self._apply_with_retry(projection, event)
+                    applied, error = await self._apply_with_retry(projection, event)
                     if not applied:
-                        # After exhausting retries, skip event and continue.
-                        self._errors[name] += 1
+                        dead_lettered = await self._dead_letter_with_retry(name, event, error)
+                        if dead_lettered:
+                            self._errors[name] += 1
+                            projection.mark_progress(event)
+                            checkpoint_position = global_position + 1
+                            if await self._save_checkpoint_with_retry(name, checkpoint_position):
+                                next_positions[name] = checkpoint_position
+                                processed_any += 1
                         continue
 
                 projection.mark_progress(event)
@@ -91,19 +98,66 @@ class ProjectionDaemon:
 
         return processed_any
 
-    async def _apply_with_retry(self, projection: Projection, event: dict[str, Any]) -> bool:
+    async def _apply_with_retry(self, projection: Projection, event: dict[str, Any]) -> tuple[bool, Exception | None]:
         attempts = 0
+        last_error: Exception | None = None
         while attempts <= self._max_retries:
             try:
                 await projection.process_event(event)
-                return True
+                return True, None
             except Exception as exc:
+                last_error = exc
                 attempts += 1
                 self._metrics.retries += 1
                 self._logger.warning(
                     "projection_daemon.retry",
                     extra={
                         "projection": projection.name,
+                        "event_type": event.get("event_type"),
+                        "attempt": attempts,
+                        "error": exc.__class__.__name__,
+                    },
+                )
+                if attempts > self._max_retries:
+                    self._metrics.failures += 1
+                    return False, last_error
+                await asyncio.sleep(min(0.05 * attempts, 0.5))
+        return False, last_error
+
+    async def _dead_letter_with_retry(
+        self,
+        projection_name: str,
+        event: dict[str, Any],
+        error: Exception | None,
+    ) -> bool:
+        attempts = 0
+        dead_letter_error = error or RuntimeError("projection processing failed")
+        while attempts <= self._max_retries:
+            try:
+                saver = getattr(self._store, "save_projection_dead_letter", None)
+                if saver is None:
+                    raise AttributeError("store does not support projection dead letters")
+                await saver(projection_name, event, dead_letter_error, attempts)
+                self._metrics.dead_letters += 1
+                self._dead_letters[projection_name] += 1
+                self._logger.error(
+                    "projection_daemon.dead_lettered",
+                    extra={
+                        "projection": projection_name,
+                        "event_type": event.get("event_type"),
+                        "global_position": event.get("global_position"),
+                        "attempts": attempts,
+                        "error": dead_letter_error.__class__.__name__,
+                    },
+                )
+                return True
+            except Exception as exc:
+                attempts += 1
+                self._metrics.retries += 1
+                self._logger.warning(
+                    "projection_daemon.dead_letter_retry",
+                    extra={
+                        "projection": projection_name,
                         "event_type": event.get("event_type"),
                         "attempt": attempts,
                         "error": exc.__class__.__name__,
@@ -143,6 +197,9 @@ class ProjectionDaemon:
 
     def get_error_counts(self) -> dict[str, int]:
         return dict(self._errors)
+
+    def get_dead_letter_counts(self) -> dict[str, int]:
+        return dict(self._dead_letters)
 
     def get_metrics(self) -> dict[str, int]:
         return self._metrics.snapshot()

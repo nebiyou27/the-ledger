@@ -52,9 +52,9 @@ async def test_agent_session_emits_snapshot_and_recovery_uses_it():
 
     session_stream = f"agent-{agent.agent_type}-{agent.session_id}"
     session_events = await store.load_stream(session_stream)
-    snapshots = [event for event in session_events if event["event_type"] == "AgentSessionSnapshot"]
+    snapshots = [event for event in session_events if event["event_type"] == "AgentSessionSnapshotted"]
 
-    assert snapshots, "expected at least one AgentSessionSnapshot event"
+    assert snapshots, "expected at least one AgentSessionSnapshotted event"
     assert snapshots[0]["payload"]["snapshot_reason"] == "periodic"
     assert snapshots[0]["payload"]["last_completed_node"] == "analyze"
 

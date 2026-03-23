@@ -492,8 +492,8 @@ class AgentSessionRecovered(BaseEvent):
     recovery_point: str
     recovered_at: datetime
 
-class AgentSessionSnapshot(BaseEvent):
-    event_type: str = "AgentSessionSnapshot"
+class AgentSessionSnapshotted(BaseEvent):
+    event_type: str = "AgentSessionSnapshotted"
     session_id: str
     agent_type: AgentType
     application_id: str
@@ -699,7 +699,7 @@ EVENT_REGISTRY: dict[str, type[BaseEvent]] = {
     "AgentSessionCompleted": AgentSessionCompleted,
     "AgentSessionFailed": AgentSessionFailed,
     "AgentSessionRecovered": AgentSessionRecovered,
-    "AgentSessionSnapshot": AgentSessionSnapshot,
+    "AgentSessionSnapshotted": AgentSessionSnapshotted,
     # CreditRecord
     "CreditRecordOpened": CreditRecordOpened,
     "HistoricalProfileConsumed": HistoricalProfileConsumed,

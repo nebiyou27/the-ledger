@@ -76,7 +76,7 @@ class AgentSessionAggregate:
             "AgentSessionCompleted": self._apply_agent_session_completed,
             "AgentSessionFailed": self._apply_agent_session_failed,
             "AgentSessionRecovered": self._apply_agent_session_recovered,
-            "AgentSessionSnapshot": self._apply_agent_session_snapshot,
+            "AgentSessionSnapshotted": self._apply_agent_session_snapshot,
             "AgentInputValidated": self._apply_agent_input_validated,
             "AgentInputValidationFailed": self._apply_agent_input_validation_failed,
         }

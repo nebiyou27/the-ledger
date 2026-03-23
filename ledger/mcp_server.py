@@ -130,6 +130,7 @@ class MCPRuntime:
             "rounds": rounds,
             "lag": self.get_lag_snapshot(),
             "errors": self.daemon.get_error_counts(),
+            "dead_letters": self.daemon.get_dead_letter_counts(),
         }
 
     def get_lag_snapshot(self) -> dict[str, Any]:

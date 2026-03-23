@@ -40,6 +40,24 @@ CREATE TABLE IF NOT EXISTS projection_checkpoints (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS projection_dead_letters (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    projection_name TEXT NOT NULL,
+    event_id UUID NOT NULL,
+    stream_id TEXT NOT NULL,
+    global_position BIGINT NOT NULL,
+    event_type TEXT NOT NULL,
+    event_version SMALLINT NOT NULL DEFAULT 1,
+    event_data JSONB NOT NULL,
+    error_type TEXT NOT NULL,
+    error_message TEXT NOT NULL,
+    attempts SMALLINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_projection_dead_letters_projection
+    ON projection_dead_letters (projection_name, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS agent_checkpoints (
     session_id TEXT PRIMARY KEY,
     agent_type TEXT NOT NULL,

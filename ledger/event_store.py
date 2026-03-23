@@ -182,7 +182,8 @@ class EventStore:
                 current = row["current_version"] if row else -1
                 base_metadata = _normalize_append_metadata(metadata, correlation_id, causation_id)
                 replay_start = current - len(events) + 1
-                if replay_start >= 0:
+                allow_idempotent_replay = bool(base_metadata.get("correlation_id") or base_metadata.get("causation_id"))
+                if allow_idempotent_replay and replay_start >= 0:
                     replay_rows = await conn.fetch(
                         "SELECT event_type, event_version, payload, metadata, stream_position "
                         "FROM events WHERE stream_id = $1 AND stream_position >= $2 AND stream_position <= $3 "
@@ -459,6 +460,53 @@ class EventStore:
             )
         return row["last_position"] if row else 0
 
+    async def save_projection_dead_letter(
+        self,
+        projection_name: str,
+        event: dict[str, Any],
+        error: Exception,
+        attempts: int,
+    ) -> None:
+        self._metrics.projection_dead_letter_calls += 1
+        event_id = event.get("event_id")
+        if event_id is None:
+            raise ValueError("Dead-lettered projection events must include an event_id")
+
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO projection_dead_letters "
+                "(projection_name, event_id, stream_id, global_position, event_type, event_version, event_data, error_type, error_message, attempts) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)",
+                projection_name,
+                UUID(str(event_id)),
+                str(event.get("stream_id") or ""),
+                int(event.get("global_position", -1)),
+                str(event.get("event_type") or "unknown"),
+                int(event.get("event_version", 1)),
+                _json_dumps(event),
+                error.__class__.__name__,
+                str(error),
+                attempts,
+            )
+
+    async def load_projection_dead_letters(self, projection_name: str) -> list[dict[str, Any]]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, projection_name, event_id, stream_id, global_position, event_type, event_version, event_data, error_type, error_message, attempts, created_at "
+                "FROM projection_dead_letters WHERE projection_name = $1 ORDER BY created_at DESC",
+                projection_name,
+            )
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            record = dict(row)
+            event_data = record.get("event_data")
+            if isinstance(event_data, str):
+                record["event_data"] = json.loads(event_data)
+            records.append(record)
+        return records
+
     async def save_agent_checkpoint(self, session_id: str, checkpoint: dict[str, Any]) -> None:
         self._metrics.save_checkpoint_calls += 1
         pool = self._require_pool()
@@ -556,6 +604,7 @@ class InMemoryEventStore:
         self._global: list[dict[str, Any]] = []
         self._checkpoints: dict[str, int] = {}
         self._agent_checkpoints: dict[str, dict[str, Any]] = {}
+        self._projection_dead_letters: list[dict[str, Any]] = []
         self._stream_metadata: dict[str, dict[str, Any]] = {}
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -579,7 +628,8 @@ class InMemoryEventStore:
             current = self._versions.get(stream_id, -1)
             base_metadata = _normalize_append_metadata(metadata, correlation_id, causation_id)
             replay_start = current - len(events) + 1
-            if replay_start >= 0:
+            allow_idempotent_replay = bool(base_metadata.get("correlation_id") or base_metadata.get("causation_id"))
+            if allow_idempotent_replay and replay_start >= 0:
                 replay_events = [dict(event) for event in self._streams.get(stream_id, [])[replay_start : current + 1]]
                 if _events_match(replay_events, events, base_metadata):
                     positions = [event["stream_position"] for event in replay_events]
@@ -738,6 +788,38 @@ class InMemoryEventStore:
     async def load_checkpoint(self, projection_name: str) -> int:
         self._metrics.load_checkpoint_calls += 1
         return self._checkpoints.get(projection_name, 0)
+
+    async def save_projection_dead_letter(
+        self,
+        projection_name: str,
+        event: dict[str, Any],
+        error: Exception,
+        attempts: int,
+    ) -> None:
+        self._metrics.projection_dead_letter_calls += 1
+        self._projection_dead_letters.append(
+            {
+                "id": str(uuid4()),
+                "projection_name": projection_name,
+                "event_id": str(event.get("event_id") or ""),
+                "stream_id": str(event.get("stream_id") or ""),
+                "global_position": int(event.get("global_position", -1)),
+                "event_type": str(event.get("event_type") or "unknown"),
+                "event_version": int(event.get("event_version", 1)),
+                "event_data": dict(event),
+                "error_type": error.__class__.__name__,
+                "error_message": str(error),
+                "attempts": int(attempts),
+                "created_at": _utcnow(),
+            }
+        )
+
+    async def load_projection_dead_letters(self, projection_name: str) -> list[dict[str, Any]]:
+        return [
+            dict(record)
+            for record in self._projection_dead_letters
+            if record["projection_name"] == projection_name
+        ]
 
     async def save_agent_checkpoint(self, session_id: str, checkpoint: dict[str, Any]) -> None:
         self._metrics.save_checkpoint_calls += 1

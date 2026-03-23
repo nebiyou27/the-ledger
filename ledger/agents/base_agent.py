@@ -253,12 +253,12 @@ class BaseApexAgent(ABC):
         await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionRecovered", event["payload"]))
 
     async def _record_session_snapshot(self, snapshot_reason: str, last_completed_node: str | None):
-        event = {"event_type":"AgentSessionSnapshot","event_version":1,"payload":{
+        event = {"event_type":"AgentSessionSnapshotted","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
             "snapshot_reason":snapshot_reason,"last_completed_node":last_completed_node,
             "node_sequence":self._seq,"total_llm_calls":self._llm_calls,"total_tokens_used":self._tokens,
             "total_cost_usd":round(self._cost,6),"pending_work":[],"snapshot_at":datetime.now().isoformat()}}
-        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionSnapshot", event["payload"]))
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionSnapshotted", event["payload"]))
 
     async def _save_session_checkpoint(self, state: dict, last_completed_node: str) -> None:
         snapshot_state = dict(state)

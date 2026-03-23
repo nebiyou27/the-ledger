@@ -26,6 +26,7 @@ APPROVED_SUFFIXES = (
     "Called",
     "Written",
     "Recovered",
+    "Snapshotted",
     "Opened",
     "Consumed",
     "Deferred",

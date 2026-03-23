@@ -15,6 +15,7 @@ class StoreMetrics:
     get_stream_metadata_calls: int = 0
     save_checkpoint_calls: int = 0
     load_checkpoint_calls: int = 0
+    projection_dead_letter_calls: int = 0
     archive_stream_calls: int = 0
 
     def snapshot(self) -> dict[str, int]:
@@ -27,6 +28,7 @@ class ProjectionDaemonMetrics:
     events_seen: int = 0
     retries: int = 0
     failures: int = 0
+    dead_letters: int = 0
     shutdowns: int = 0
 
     def snapshot(self) -> dict[str, int]:

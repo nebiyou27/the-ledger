@@ -74,7 +74,7 @@ async def test_projection_daemon_retries_transient_projection_failures():
 
 
 @pytest.mark.asyncio
-async def test_projection_daemon_does_not_advance_checkpoint_on_failure():
+async def test_projection_daemon_dead_letters_permanent_failures_and_advances_checkpoint():
     store = InMemoryEventStore()
     await store.append("loan-OBS-3", [_ev("SmokeStarted")], expected_version=-1)
 
@@ -83,6 +83,14 @@ async def test_projection_daemon_does_not_advance_checkpoint_on_failure():
 
     processed = await daemon._process_batch()
 
-    assert processed == 0
+    assert processed == 1
     assert daemon.get_error_counts()["always_fail"] == 1
-    assert await store.load_checkpoint("always_fail") == 0
+    assert daemon.get_dead_letter_counts()["always_fail"] == 1
+    assert await store.load_checkpoint("always_fail") == 1
+
+    dead_letters = await store.load_projection_dead_letters("always_fail")
+    assert len(dead_letters) == 1
+    record = dead_letters[0]
+    assert record["projection_name"] == "always_fail"
+    assert record["event_type"] == "SmokeStarted"
+    assert record["error_type"] == "RuntimeError"

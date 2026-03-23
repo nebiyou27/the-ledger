@@ -30,7 +30,7 @@ def test_event_registry_completeness():
         "PackageCreated","DocumentAdded","DocumentFormatValidated","ExtractionStarted","ExtractionCompleted",
         "QualityAssessmentCompleted","PackageReadyForAnalysis","AgentSessionStarted","AgentInputValidated",
         "AgentInputValidationFailed","AgentNodeExecuted","AgentToolCalled","AgentOutputWritten",
-        "AgentSessionCompleted","AgentSessionFailed","AgentSessionRecovered","AgentSessionSnapshot","CreditRecordOpened",
+        "AgentSessionCompleted","AgentSessionFailed","AgentSessionRecovered","AgentSessionSnapshotted","CreditRecordOpened",
         "HistoricalProfileConsumed","ExtractedFactsConsumed","CreditAnalysisCompleted","CreditAnalysisDeferred",
         "ComplianceCheckInitiated","ComplianceRulePassed","ComplianceRuleFailed","ComplianceRuleNoted",
         "ComplianceCheckCompleted","FraudScreeningInitiated","FraudAnomalyDetected","FraudScreeningCompleted",

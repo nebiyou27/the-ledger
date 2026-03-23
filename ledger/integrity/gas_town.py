@@ -83,7 +83,7 @@ async def reconstruct_agent_context(
     latest_snapshot_index = -1
     latest_snapshot_payload: dict[str, Any] | None = None
     for idx, event in enumerate(events):
-        if str(event.get("event_type", "")) == "AgentSessionSnapshot":
+        if str(event.get("event_type", "")) == "AgentSessionSnapshotted":
             latest_snapshot_index = idx
             latest_snapshot_payload = event.get("payload") or {}
 
