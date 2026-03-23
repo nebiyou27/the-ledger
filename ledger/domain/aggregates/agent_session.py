@@ -29,6 +29,8 @@ class AgentSessionAggregate:
     node_count: int = 0
     tool_calls: int = 0
     output_events_written: int = 0
+    snapshot_count: int = 0
+    last_snapshot_node: str | None = None
     events: list[dict] = field(default_factory=list)
 
     def assert_context_loaded(self) -> None:
@@ -74,6 +76,7 @@ class AgentSessionAggregate:
             "AgentSessionCompleted": self._apply_agent_session_completed,
             "AgentSessionFailed": self._apply_agent_session_failed,
             "AgentSessionRecovered": self._apply_agent_session_recovered,
+            "AgentSessionSnapshot": self._apply_agent_session_snapshot,
             "AgentInputValidated": self._apply_agent_input_validated,
             "AgentInputValidationFailed": self._apply_agent_input_validation_failed,
         }
@@ -126,6 +129,12 @@ class AgentSessionAggregate:
         self._validate_identity(payload)
         self.assert_context_loaded()
         self.state = AgentSessionState.STARTED
+
+    def _apply_agent_session_snapshot(self, payload: dict) -> None:
+        self._validate_identity(payload)
+        self.assert_context_loaded()
+        self.snapshot_count += 1
+        self.last_snapshot_node = payload.get("last_completed_node")
 
     def _apply_agent_input_validated(self, payload: dict) -> None:
         self._validate_identity(payload)

@@ -16,6 +16,17 @@ from ledger.domain.aggregates.agent_session import AgentSessionAggregate, AgentS
 
 LANGGRAPH_VERSION = "1.0.0"
 MAX_OCC_RETRIES = 5
+SESSION_SNAPSHOT_INTERVAL = 3
+RETRYABLE_EXCEPTION_NAMES = {
+    "TimeoutError",
+    "ConnectionError",
+    "ConnectError",
+    "ReadTimeout",
+    "WriteTimeout",
+    "RequestError",
+    "ServiceUnavailableError",
+    "RateLimitError",
+}
 
 class BaseApexAgent(ABC):
     """
@@ -37,16 +48,21 @@ class BaseApexAgent(ABC):
         self._session_stream = None; self._t0 = None
         self._seq = 0; self._llm_calls = 0; self._tokens = 0; self._cost = 0.0
         self._graph = None
+        self._resume_after_sequence = -1
+        self._resume_state_snapshot: dict | None = None
 
     @abstractmethod
     def build_graph(self): raise NotImplementedError
 
-    async def process_application(self, application_id: str) -> None:
+    async def process_application(self, application_id: str, resume_from_session_id: str | None = None) -> None:
         """
-        Process an application with full OCC retry: if an OptimisticConcurrencyError occurs,
-        reloads state and retries the entire decision process up to MAX_OCC_RETRIES times.
+        Process an application with OCC retry. If resume_from_session_id is provided,
+        the agent starts a new session that records the recovery point before replaying
+        the graph from a reconstructed context summary.
         """
         from ledger.exceptions import OptimisticConcurrencyError
+        from ledger.integrity.gas_town import reconstruct_agent_context
+
         last_exception = None
         # Session initialization (run once)
         if not self._graph:
@@ -59,23 +75,65 @@ class BaseApexAgent(ABC):
         self._llm_calls = 0
         self._tokens = 0
         self._cost = 0.0
-        try:
-            await self._start_session(application_id)
-        except OptimisticConcurrencyError as occ:
-            await self._fail_session("OptimisticConcurrencyError", str(occ))
-            raise
-        except Exception as e:
-            await self._fail_session(type(e).__name__, str(e))
-            raise
+        self._resume_after_sequence = -1
+        self._resume_state_snapshot = None
+        recovery_context = None
+        recovery_point = None
+        checkpoint = None
+        if resume_from_session_id:
+            recovery_context = await reconstruct_agent_context(
+                self.store,
+                agent_id=self.agent_id,
+                session_id=resume_from_session_id,
+            )
+            checkpoint = await self._load_session_checkpoint(resume_from_session_id)
+            if checkpoint is not None:
+                self._resume_after_sequence = int(checkpoint.get("node_sequence", -1))
+                self._resume_state_snapshot = dict((checkpoint.get("checkpoint_data") or {}).get("state_snapshot") or {})
+                recovery_point = str(checkpoint.get("last_completed_node") or self._latest_recovery_point(resume_from_session_id) or "unknown")
+            else:
+                recovery_point = self._latest_recovery_point(resume_from_session_id)
+        start_context_source = f"prior_session_replay:{resume_from_session_id}" if resume_from_session_id else "fresh"
+        start_context_token_count = self._context_token_count(recovery_context)
+        started = False
         for attempt in range(MAX_OCC_RETRIES):
             try:
-                result = await self._graph.ainvoke(self._initial_state(application_id))
+                await self._start_session(
+                    application_id,
+                    context_source=start_context_source,
+                    context_token_count=start_context_token_count,
+                )
+                if resume_from_session_id:
+                    await self._record_recovery(resume_from_session_id, recovery_point or "unknown")
+                started = True
+                break
+            except Exception as e:
+                if self._is_retryable_exception(e) and attempt < MAX_OCC_RETRIES - 1:
+                    last_exception = e
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+                    continue
+                await self._fail_session(type(e).__name__, str(e))
+                raise
+        if not started:
+            if last_exception is not None:
+                await self._fail_session(type(last_exception).__name__, str(last_exception))
+                raise last_exception
+            raise RuntimeError("Failed to start agent session")
+        for attempt in range(MAX_OCC_RETRIES):
+            try:
+                result = await self._graph.ainvoke(
+                    self._initial_state(
+                        application_id,
+                        recovery_context_text=getattr(recovery_context, "context_text", None),
+                        recovery_pending_work=getattr(recovery_context, "pending_work", None),
+                        recovered_from_session_id=resume_from_session_id,
+                        recovery_point=recovery_point,
+                        resume_after_sequence=self._resume_after_sequence,
+                        resume_state_snapshot=self._resume_state_snapshot,
+                    )
+                )
                 await self._complete_session(result)
                 return
-            except OptimisticConcurrencyError as occ:
-                last_exception = occ
-                await asyncio.sleep(0.1 * (2 ** attempt))
-                continue
             except Exception as e:
                 # Unwrap OCC if wrapped by LangGraph or other framework
                 occ = None
@@ -87,67 +145,157 @@ class BaseApexAgent(ABC):
                     last_exception = occ
                     await asyncio.sleep(0.1 * (2 ** attempt))
                     continue
+                if self._is_retryable_exception(e):
+                    last_exception = e
+                    await asyncio.sleep(0.1 * (2 ** attempt))
+                    continue
                 await self._fail_session(type(e).__name__, str(e))
                 raise
         if last_exception:
-            await self._fail_session("OptimisticConcurrencyError", str(last_exception))
+            await self._fail_session(type(last_exception).__name__, str(last_exception))
             raise last_exception
-    def _initial_state(self, app_id):
-        return {"application_id": app_id, "session_id": self.session_id,
-                "agent_id": self.agent_id, "errors": [], "output_events_written": [], "next_agent_triggered": None}
 
-    async def _start_session(self, app_id):
+    def _initial_state(
+        self,
+        app_id,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ):
+        state = {
+            "application_id": app_id,
+            "session_id": self.session_id,
+            "agent_id": self.agent_id,
+            "errors": [],
+            "output_events_written": [],
+            "next_agent_triggered": None,
+            "resume_after_sequence": resume_after_sequence,
+        }
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)
+        return state
+
+    async def _start_session(self, app_id, context_source: str = "fresh", context_token_count: int = 1000):
         await self._append_session({"event_type":"AgentSessionStarted","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"agent_id":self.agent_id,
             "application_id":app_id,"model_version":self.model,"langgraph_graph_version":LANGGRAPH_VERSION,
-            "context_source":"fresh","context_token_count":1000,"started_at":datetime.now().isoformat()}})
+            "context_source":context_source,"context_token_count":context_token_count,"started_at":datetime.now().isoformat()}},
+            causation_id=self._event_causation_id(self._session_stream, "AgentSessionStarted", {"application_id": app_id, "context_source": context_source, "context_token_count": context_token_count}))
 
     async def _record_node_execution(self, name, in_keys, out_keys, ms, tok_in=None, tok_out=None, cost=None):
         self._seq += 1
         if tok_in: self._tokens += tok_in + (tok_out or 0); self._llm_calls += 1
         if cost: self._cost += cost
-        await self._append_session({"event_type":"AgentNodeExecuted","event_version":1,"payload":{
+        event = {"event_type":"AgentNodeExecuted","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"node_name":name,
             "node_sequence":self._seq,"input_keys":in_keys,"output_keys":out_keys,
             "llm_called":tok_in is not None,"llm_tokens_input":tok_in,"llm_tokens_output":tok_out,
-            "llm_cost_usd":cost,"duration_ms":ms,"executed_at":datetime.now().isoformat()}})
+            "llm_cost_usd":cost,"duration_ms":ms,"executed_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentNodeExecuted", event["payload"]))
+        if self._seq % SESSION_SNAPSHOT_INTERVAL == 0:
+            await self._record_session_snapshot(
+                snapshot_reason="periodic",
+                last_completed_node=name,
+            )
 
     async def _record_tool_call(self, tool, inp, out, ms):
-        await self._append_session({"event_type":"AgentToolCalled","event_version":1,"payload":{
+        event = {"event_type":"AgentToolCalled","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"tool_name":tool,
             "tool_input_summary":inp,"tool_output_summary":out,"tool_duration_ms":ms,
-            "called_at":datetime.now().isoformat()}})
+            "called_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentToolCalled", event["payload"]))
 
     async def _record_output_written(self, events_written, summary):
-        await self._append_session({"event_type":"AgentOutputWritten","event_version":1,"payload":{
+        event = {"event_type":"AgentOutputWritten","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
-            "events_written":events_written,"output_summary":summary,"written_at":datetime.now().isoformat()}})
+            "events_written":events_written,"output_summary":summary,"written_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentOutputWritten", event["payload"]))
+        await self._record_session_snapshot(snapshot_reason="output_written", last_completed_node="write_output")
 
     async def _complete_session(self, result):
         ms = int((time.time()-self._t0)*1000)
-        await self._append_session({"event_type":"AgentSessionCompleted","event_version":1,"payload":{
+        event = {"event_type":"AgentSessionCompleted","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
             "total_nodes_executed":self._seq,"total_llm_calls":self._llm_calls,"total_tokens_used":self._tokens,
             "total_cost_usd":round(self._cost,6),"total_duration_ms":ms,
-            "next_agent_triggered":result.get("next_agent_triggered"),"completed_at":datetime.now().isoformat()}})
+            "next_agent_triggered":result.get("next_agent_triggered"),"completed_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionCompleted", event["payload"]))
 
     async def _fail_session(self, etype, emsg):
         agg = await AgentSessionAggregate.load(self.store, self._session_stream)
         if agg.state == AgentSessionState.NEW:
             return
-        await self._append_session({"event_type":"AgentSessionFailed","event_version":1,"payload":{
+        event = {"event_type":"AgentSessionFailed","event_version":1,"payload":{
             "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
             "error_type":etype,"error_message":emsg[:500],"last_successful_node":f"node_{self._seq}",
-            "recoverable":etype in ("llm_timeout","RateLimitError"),"failed_at":datetime.now().isoformat()}})
+            "recoverable":self._is_retryable_error_type(etype),"failed_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionFailed", event["payload"]))
 
-    async def _append_session(self, event: dict):
+    async def _record_recovery(self, recovered_from_session_id: str, recovery_point: str):
+        event = {"event_type":"AgentSessionRecovered","event_version":1,"payload":{
+            "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
+            "recovered_from_session_id":recovered_from_session_id,"recovery_point":recovery_point,
+            "recovered_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionRecovered", event["payload"]))
+
+    async def _record_session_snapshot(self, snapshot_reason: str, last_completed_node: str | None):
+        event = {"event_type":"AgentSessionSnapshot","event_version":1,"payload":{
+            "session_id":self.session_id,"agent_type":self.agent_type,"application_id":self.application_id,
+            "snapshot_reason":snapshot_reason,"last_completed_node":last_completed_node,
+            "node_sequence":self._seq,"total_llm_calls":self._llm_calls,"total_tokens_used":self._tokens,
+            "total_cost_usd":round(self._cost,6),"pending_work":[],"snapshot_at":datetime.now().isoformat()}}
+        await self._append_session(event, causation_id=self._event_causation_id(self._session_stream, "AgentSessionSnapshot", event["payload"]))
+
+    async def _save_session_checkpoint(self, state: dict, last_completed_node: str) -> None:
+        snapshot_state = dict(state)
+        snapshot_state.pop("session_id", None)
+        checkpoint = {
+            "session_id": self.session_id,
+            "agent_type": self.agent_type,
+            "application_id": self.application_id,
+            "last_completed_node": last_completed_node,
+            "node_sequence": self._seq,
+            "total_llm_calls": self._llm_calls,
+            "total_tokens_used": self._tokens,
+            "total_cost_usd": round(self._cost, 6),
+            "state_snapshot": snapshot_state,
+        }
+        saver = getattr(self.store, "save_agent_checkpoint", None)
+        if saver is not None:
+            await saver(self.session_id, checkpoint)
+
+    async def _load_session_checkpoint(self, session_id: str) -> dict | None:
+        loader = getattr(self.store, "load_agent_checkpoint", None)
+        if loader is None:
+            return None
+        return await loader(session_id)
+
+    @staticmethod
+    def _should_skip_node(state: dict, node_sequence: int) -> bool:
+        return int(state.get("resume_after_sequence", -1) or -1) >= node_sequence
+
+    async def _append_session(self, event: dict, causation_id: str | None = None):
         if not self._session_stream:
             raise RuntimeError("Session stream is not initialized")
 
         # Validate session invariants in-memory before persistence (Gas Town pattern).
         agg = await AgentSessionAggregate.load(self.store, self._session_stream)
         agg.apply(event)
-        await self._append_with_retry(self._session_stream, [event])
+        await self._append_with_retry(self._session_stream, [event], causation_id=causation_id, max_retries=1)
 
     async def _append_stream(self, stream_id: str, event_dict: dict, causation_id: str = None):
         """Backward-compatible wrapper for single-event append."""
@@ -157,6 +305,8 @@ class BaseApexAgent(ABC):
         """Append one or more events with OCC retry. max_retries=0 disables internal retry."""
         if max_retries is None:
             max_retries = MAX_OCC_RETRIES
+        if causation_id is None:
+            causation_id = self._event_causation_id(stream_id, "event_batch", {"events": events})
         for attempt in range(max_retries if max_retries > 0 else 1):
             try:
                 ver = await self.store.stream_version(stream_id)
@@ -167,6 +317,48 @@ class BaseApexAgent(ABC):
                 if "OptimisticConcurrencyError" in type(e).__name__ and max_retries > 0 and attempt < max_retries-1:
                     await asyncio.sleep(0.1 * (2**attempt)); continue
                 raise
+
+    def _event_causation_id(self, stream_id: str, event_type: str, payload: dict) -> str:
+        raw = json.dumps(
+            {
+                "stream_id": stream_id,
+                "event_type": event_type,
+                "payload": payload,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _is_retryable_error_type(error_type: str) -> bool:
+        return error_type in {"OptimisticConcurrencyError", *RETRYABLE_EXCEPTION_NAMES}
+
+    @classmethod
+    def _is_retryable_exception(cls, exc: Exception) -> bool:
+        error_type = type(exc).__name__
+        if cls._is_retryable_error_type(error_type):
+            return True
+        if isinstance(exc, (TimeoutError, ConnectionError)):
+            return True
+        return False
+
+    def _latest_recovery_point(self, session_id: str) -> str | None:
+        stream_id = f"agent-{self.agent_type}-{session_id}"
+        events = self.store._streams.get(stream_id, []) if hasattr(self.store, "_streams") else []
+        for event in reversed(events):
+            if event.get("event_type") == "AgentNodeExecuted":
+                return str((event.get("payload") or {}).get("node_name") or "unknown")
+            if event.get("event_type") == "AgentOutputWritten":
+                return "output_written"
+        return None
+
+    @staticmethod
+    def _context_token_count(recovery_context) -> int:
+        if recovery_context is None:
+            return 1000
+        text = getattr(recovery_context, "context_text", "") or ""
+        return max(0, min(8000, max(1, len(text) // 4)))
 
     async def _call_llm(self, system, user, max_tokens=1024):
         return await self.llm.generate(system=system, user=user, max_tokens=max_tokens)
@@ -217,6 +409,8 @@ class CreditAnalysisAgent(BaseApexAgent):
         return g.compile()
 
     async def _node_validate_inputs(self, state):
+        if self._should_skip_node(state, 1):
+            return state
         t = time.time()
         # TODO: Load LoanApplicationAggregate, verify state == DOCUMENTS_PROCESSED
         # TODO: Load applicant_id, requested_amount, loan_purpose from ApplicationSubmitted event
@@ -224,15 +418,21 @@ class CreditAnalysisAgent(BaseApexAgent):
         # PLACEHOLDER:
         state = {**state, "applicant_id": f"COMP-001", "requested_amount_usd": 500_000.0, "loan_purpose": "working_capital"}
         await self._record_node_execution("validate_inputs",["application_id"],["applicant_id","requested_amount_usd","loan_purpose"],int((time.time()-t)*1000))
+        await self._save_session_checkpoint(state, "validate_inputs")
         return state
 
     async def _node_open_credit_record(self, state):
+        if self._should_skip_node(state, 2):
+            return state
         t = time.time()
         # TODO: await self._append_stream(f"credit-{state['application_id']}", CreditRecordOpened(...).to_store_dict(), expected_version=-1)
         await self._record_node_execution("open_credit_record",["applicant_id"],["credit_stream_opened"],int((time.time()-t)*1000))
+        await self._save_session_checkpoint(state, "open_credit_record")
         return state
 
     async def _node_load_registry(self, state):
+        if self._should_skip_node(state, 3):
+            return state
         t = time.time()
         # TODO: profile = await self.registry.get_company(state["applicant_id"])
         # TODO: hist = await self.registry.get_financial_history(state["applicant_id"], years=[2022,2023,2024])
@@ -242,9 +442,13 @@ class CreditAnalysisAgent(BaseApexAgent):
         await self._record_tool_call("query_applicant_registry", f"company_id={state['applicant_id']}", "3yr financials loaded", ms)
         # TODO: await self._append_stream(f"credit-{state['application_id']}", HistoricalProfileConsumed(...).to_store_dict())
         await self._record_node_execution("load_applicant_registry",["applicant_id"],["historical_financials","compliance_flags","loan_history"],ms)
-        return {**state,"company_profile":{},"historical_financials":[],"compliance_flags":[],"loan_history":[]}
+        next_state = {**state,"company_profile":{},"historical_financials":[],"compliance_flags":[],"loan_history":[]}
+        await self._save_session_checkpoint(next_state, "load_applicant_registry")
+        return next_state
 
     async def _node_load_facts(self, state):
+        if self._should_skip_node(state, 4):
+            return state
         t = time.time()
         # TODO: load ExtractionCompleted events from f"docpkg-{state['application_id']}"
         # TODO: merge FinancialFacts from income_statement + balance_sheet documents
@@ -252,9 +456,13 @@ class CreditAnalysisAgent(BaseApexAgent):
         await self._record_tool_call("load_event_store_stream", f"docpkg-{state['application_id']}", "ExtractionCompleted events loaded", ms)
         # TODO: await self._append_stream(f"credit-{state['application_id']}", ExtractedFactsConsumed(...).to_store_dict())
         await self._record_node_execution("load_extracted_facts",["document_package_events"],["extracted_facts","quality_flags"],ms)
-        return {**state,"extracted_facts":{},"quality_flags":[]}
+        next_state = {**state,"extracted_facts":{},"quality_flags":[]}
+        await self._save_session_checkpoint(next_state, "load_extracted_facts")
+        return next_state
 
     async def _node_analyze(self, state):
+        if self._should_skip_node(state, 5):
+            return state
         t = time.time()
         hist = state.get("historical_financials") or []
         fin_table = "\n".join([f"FY{f['fiscal_year'] if isinstance(f,dict) else ''}: (historical data)" for f in hist]) if hist else "No historical data loaded — TODO: implement load_applicant_registry"
@@ -282,9 +490,13 @@ Prior loans: {state.get('loan_history',[])}"""
             tok_in=tok_out=0; cost=0.0
         ms = int((time.time()-t)*1000)
         await self._record_node_execution("analyze_credit_risk",["historical_financials","extracted_facts"],["credit_decision"],ms,tok_in,tok_out,cost)
-        return {**state,"credit_decision":decision}
+        next_state = {**state,"credit_decision":decision}
+        await self._save_session_checkpoint(next_state, "analyze_credit_risk")
+        return next_state
 
     async def _node_policy(self, state):
+        if self._should_skip_node(state, 6):
+            return state
         t = time.time()
         d = state.get("credit_decision") or {}; violations = []
         hist = state.get("historical_financials") or []
@@ -298,9 +510,13 @@ Prior loans: {state.get('loan_history',[])}"""
             d["confidence"] = min(d.get("confidence",1.0), 0.50); violations.append("COMPLIANCE_FLAG")
         if violations: d["policy_overrides_applied"] = d.get("policy_overrides_applied",[]) + violations
         await self._record_node_execution("apply_policy_constraints",["credit_decision"],["credit_decision"],int((time.time()-t)*1000))
-        return {**state,"credit_decision":d,"policy_violations":violations}
+        next_state = {**state,"credit_decision":d,"policy_violations":violations}
+        await self._save_session_checkpoint(next_state, "apply_policy_constraints")
+        return next_state
 
     async def _node_write(self, state):
+        if self._should_skip_node(state, 7):
+            return state
         t = time.time()
         app_id = state["application_id"]; d = state["credit_decision"]
         # TODO: append CreditAnalysisCompleted to f"credit-{app_id}"
@@ -312,7 +528,9 @@ Prior loans: {state.get('loan_history',[])}"""
         ]
         await self._record_output_written(events_written, f"Credit: {d.get('risk_tier')} risk, ${d.get('recommended_limit_usd',0):,.0f} limit, {d.get('confidence',0):.0%} confidence. Fraud screening triggered.")
         await self._record_node_execution("write_output",["credit_decision"],["events_written"],int((time.time()-t)*1000))
-        return {**state,"output_events_written":events_written,"next_agent_triggered":"fraud_detection"}
+        next_state = {**state,"output_events_written":events_written,"next_agent_triggered":"fraud_detection"}
+        await self._save_session_checkpoint(next_state, "write_output")
+        return next_state
 
 
 class DocumentProcessingAgent(BaseApexAgent):

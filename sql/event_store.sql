@@ -40,6 +40,16 @@ CREATE TABLE IF NOT EXISTS projection_checkpoints (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS agent_checkpoints (
+    session_id TEXT PRIMARY KEY,
+    agent_type TEXT NOT NULL,
+    application_id TEXT NOT NULL,
+    last_completed_node TEXT,
+    node_sequence BIGINT NOT NULL DEFAULT 0,
+    checkpoint_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS outbox (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,

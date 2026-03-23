@@ -80,7 +80,19 @@ async def reconstruct_agent_context(
             stream_id=stream_id,
         )
 
-    pending_work = _derive_pending_work(events)
+    latest_snapshot_index = -1
+    latest_snapshot_payload: dict[str, Any] | None = None
+    for idx, event in enumerate(events):
+        if str(event.get("event_type", "")) == "AgentSessionSnapshot":
+            latest_snapshot_index = idx
+            latest_snapshot_payload = event.get("payload") or {}
+
+    if latest_snapshot_payload is not None:
+        pending_work = list(latest_snapshot_payload.get("pending_work") or [])
+        pending_work.extend(_derive_pending_work(events[latest_snapshot_index + 1 :]))
+    else:
+        pending_work = _derive_pending_work(events)
+
     last_event = events[-1]
     last_event_type = str(last_event.get("event_type", ""))
 
@@ -92,7 +104,17 @@ async def reconstruct_agent_context(
     }:
         status = "NEEDS_RECONCILIATION"
 
-    context_text = _summarize(events, token_budget=token_budget)
+    if latest_snapshot_payload is not None:
+        snapshot_reason = str(latest_snapshot_payload.get("snapshot_reason") or "checkpoint")
+        last_completed_node = str(latest_snapshot_payload.get("last_completed_node") or "unknown")
+        snapshot_prefix = (
+            f"Snapshot checkpoint: reason={snapshot_reason}, "
+            f"node={last_completed_node}, "
+            f"sequence={latest_snapshot_payload.get('node_sequence', -1)}\n"
+        )
+        context_text = snapshot_prefix + _summarize(events[latest_snapshot_index + 1 :], token_budget=token_budget)
+    else:
+        context_text = _summarize(events, token_budget=token_budget)
     return AgentContext(
         context_text=context_text,
         last_event_position=int(last_event.get("stream_position", -1)),

@@ -492,6 +492,20 @@ class AgentSessionRecovered(BaseEvent):
     recovery_point: str
     recovered_at: datetime
 
+class AgentSessionSnapshot(BaseEvent):
+    event_type: str = "AgentSessionSnapshot"
+    session_id: str
+    agent_type: AgentType
+    application_id: str
+    snapshot_reason: str
+    last_completed_node: str | None = None
+    node_sequence: int
+    total_llm_calls: int
+    total_tokens_used: int
+    total_cost_usd: float
+    pending_work: list[str] = Field(default_factory=list)
+    snapshot_at: datetime
+
 
 # ─── AGGREGATE 4: CREDIT RECORD ──────────────────────────────────────────────
 # stream: "credit-{application_id}"
@@ -685,6 +699,7 @@ EVENT_REGISTRY: dict[str, type[BaseEvent]] = {
     "AgentSessionCompleted": AgentSessionCompleted,
     "AgentSessionFailed": AgentSessionFailed,
     "AgentSessionRecovered": AgentSessionRecovered,
+    "AgentSessionSnapshot": AgentSessionSnapshot,
     # CreditRecord
     "CreditRecordOpened": CreditRecordOpened,
     "HistoricalProfileConsumed": HistoricalProfileConsumed,

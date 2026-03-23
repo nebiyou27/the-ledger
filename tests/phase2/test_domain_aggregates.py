@@ -44,6 +44,35 @@ def test_agent_session_transitions_and_counts():
     assert agg.output_events_written == 1
 
 
+def test_agent_session_snapshot_updates_checkpoint_state():
+    agg = AgentSessionAggregate(stream_id="agent-credit_analysis-sess-1")
+    agg.apply(_ev("AgentSessionStarted", {
+        "session_id": "sess-1",
+        "agent_type": "credit_analysis",
+        "agent_id": "agent-1",
+        "application_id": "APEX-1",
+        "model_version": "claude-sonnet-4-20250514",
+        "context_source": "fresh",
+    }))
+    agg.apply(_ev("AgentNodeExecuted", {"session_id": "sess-1", "agent_type": "credit_analysis"}))
+    agg.apply(_ev("AgentSessionSnapshot", {
+        "session_id": "sess-1",
+        "agent_type": "credit_analysis",
+        "application_id": "APEX-1",
+        "snapshot_reason": "periodic",
+        "last_completed_node": "validate_inputs",
+        "node_sequence": 1,
+        "total_llm_calls": 0,
+        "total_tokens_used": 0,
+        "total_cost_usd": 0.0,
+        "pending_work": ["load_registry"],
+    }))
+
+    assert agg.snapshot_count == 1
+    assert agg.last_snapshot_node == "validate_inputs"
+    assert agg.state == AgentSessionState.STARTED
+
+
 def test_compliance_completion_requires_all_rules_without_hard_block():
     agg = ComplianceRecordAggregate(application_id="APEX-1")
     agg.apply(_ev("ComplianceCheckInitiated", {

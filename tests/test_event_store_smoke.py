@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from ledger.event_store import EventStore
+from ledger.event_store import InMemoryEventStore
 
 
 pytestmark = pytest.mark.skipif(
@@ -56,5 +57,20 @@ async def test_postgres_event_store_smoke():
         assert any(event["stream_id"] == stream_id for event in replay)
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_inmemory_event_store_replays_identical_append_idempotently():
+    store = InMemoryEventStore()
+    stream_id = "loan-idempotent-1"
+    events = [{"event_type": "SmokeStarted", "event_version": 1, "payload": {"ok": True}}]
+
+    first = await store.append(stream_id, events, expected_version=-1, causation_id="smoke-cause-1")
+    second = await store.append(stream_id, events, expected_version=-1, causation_id="smoke-cause-1")
+
+    assert first == [0]
+    assert second == [0]
+    loaded = await store.load_stream(stream_id)
+    assert [event["event_type"] for event in loaded] == ["SmokeStarted"]
 
 

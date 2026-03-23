@@ -23,14 +23,14 @@ from faker import Faker; Faker.seed(42)
 COMPANIES = generate_companies(10)
 
 def test_event_registry_completeness():
-    """All 45 expected event types are registered."""
+    """All expected event types are registered."""
     required = [
         "ApplicationSubmitted","DocumentUploaded","CreditAnalysisRequested","FraudScreeningRequested",
         "ComplianceCheckRequested","DecisionGenerated","ApplicationApproved","ApplicationDeclined",
         "PackageCreated","DocumentAdded","DocumentFormatValidated","ExtractionStarted","ExtractionCompleted",
         "QualityAssessmentCompleted","PackageReadyForAnalysis","AgentSessionStarted","AgentInputValidated",
         "AgentInputValidationFailed","AgentNodeExecuted","AgentToolCalled","AgentOutputWritten",
-        "AgentSessionCompleted","AgentSessionFailed","AgentSessionRecovered","CreditRecordOpened",
+        "AgentSessionCompleted","AgentSessionFailed","AgentSessionRecovered","AgentSessionSnapshot","CreditRecordOpened",
         "HistoricalProfileConsumed","ExtractedFactsConsumed","CreditAnalysisCompleted","CreditAnalysisDeferred",
         "ComplianceCheckInitiated","ComplianceRulePassed","ComplianceRuleFailed","ComplianceRuleNoted",
         "ComplianceCheckCompleted","FraudScreeningInitiated","FraudAnomalyDetected","FraudScreeningCompleted",

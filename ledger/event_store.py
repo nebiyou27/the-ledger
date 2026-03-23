@@ -70,6 +70,34 @@ def _row_to_stored_event(row: Any) -> StoredEvent:
     return StoredEvent.model_validate(event)
 
 
+def _normalize_append_metadata(
+    metadata: dict | None,
+    correlation_id: str | None,
+    causation_id: str | None,
+) -> dict[str, Any]:
+    base_metadata = dict(metadata or {})
+    if correlation_id is not None:
+        base_metadata["correlation_id"] = correlation_id
+    if causation_id is not None:
+        base_metadata["causation_id"] = causation_id
+    return base_metadata
+
+
+def _events_match(existing_events: list[dict[str, Any]], new_events: list[dict[str, Any]], base_metadata: dict[str, Any]) -> bool:
+    if len(existing_events) != len(new_events):
+        return False
+    for existing, new in zip(existing_events, new_events):
+        if existing.get("event_type") != new.get("event_type"):
+            return False
+        if int(existing.get("event_version", 1)) != int(new.get("event_version", 1)):
+            return False
+        if dict(existing.get("payload") or {}) != dict(new.get("payload") or {}):
+            return False
+        if dict(existing.get("metadata") or {}) != base_metadata:
+            return False
+    return True
+
+
 def _row_to_stream_metadata(row: Any) -> StreamMetadata:
     metadata = dict(row)
     raw_json = metadata.get("metadata")
@@ -152,6 +180,30 @@ class EventStore:
                 )
 
                 current = row["current_version"] if row else -1
+                base_metadata = _normalize_append_metadata(metadata, correlation_id, causation_id)
+                replay_start = current - len(events) + 1
+                if replay_start >= 0:
+                    replay_rows = await conn.fetch(
+                        "SELECT event_type, event_version, payload, metadata, stream_position "
+                        "FROM events WHERE stream_id = $1 AND stream_position >= $2 AND stream_position <= $3 "
+                        "ORDER BY stream_position ASC",
+                        stream_id,
+                        replay_start,
+                        current,
+                    )
+                    replay_events = [_row_to_event(row) for row in replay_rows]
+                    if _events_match(replay_events, events, base_metadata):
+                        positions = [int(row["stream_position"]) for row in replay_rows]
+                        self._logger.info(
+                            "event_store.append.idempotent_replay",
+                            extra={
+                                "stream_id": stream_id,
+                                "event_count": len(events),
+                                "expected_version": expected_version,
+                                "current_version": current,
+                            },
+                        )
+                        return positions
                 if current != expected_version:
                     self._metrics.occ_failures += 1
                     self._logger.warning(
@@ -175,12 +227,6 @@ class EventStore:
                         -1,
                         _json_dumps({}),
                     )
-
-                base_metadata = dict(metadata or {})
-                if correlation_id is not None:
-                    base_metadata["correlation_id"] = correlation_id
-                if causation_id is not None:
-                    base_metadata["causation_id"] = causation_id
 
                 positions: list[int] = []
                 new_version = expected_version
@@ -413,6 +459,48 @@ class EventStore:
             )
         return row["last_position"] if row else 0
 
+    async def save_agent_checkpoint(self, session_id: str, checkpoint: dict[str, Any]) -> None:
+        self._metrics.save_checkpoint_calls += 1
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO agent_checkpoints "
+                "(session_id, agent_type, application_id, last_completed_node, node_sequence, checkpoint_data, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW()) "
+                "ON CONFLICT (session_id) DO UPDATE "
+                "SET agent_type = EXCLUDED.agent_type, "
+                "application_id = EXCLUDED.application_id, "
+                "last_completed_node = EXCLUDED.last_completed_node, "
+                "node_sequence = EXCLUDED.node_sequence, "
+                "checkpoint_data = EXCLUDED.checkpoint_data, "
+                "updated_at = NOW()",
+                session_id,
+                checkpoint.get("agent_type", "unknown"),
+                checkpoint.get("application_id", "unknown"),
+                checkpoint.get("last_completed_node"),
+                int(checkpoint.get("node_sequence", 0)),
+                _json_dumps(checkpoint),
+            )
+
+    async def load_agent_checkpoint(self, session_id: str) -> dict[str, Any] | None:
+        self._metrics.load_checkpoint_calls += 1
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT session_id, agent_type, application_id, last_completed_node, node_sequence, checkpoint_data, updated_at "
+                "FROM agent_checkpoints WHERE session_id = $1",
+                session_id,
+            )
+        if row is None:
+            return None
+        checkpoint = dict(row)
+        raw = checkpoint.get("checkpoint_data")
+        if isinstance(raw, str):
+            checkpoint["checkpoint_data"] = json.loads(raw)
+        elif raw is None:
+            checkpoint["checkpoint_data"] = {}
+        return checkpoint
+
     def get_metrics_snapshot(self) -> dict[str, int]:
         return self._metrics.snapshot()
 
@@ -467,6 +555,7 @@ class InMemoryEventStore:
         self._versions: dict[str, int] = {}
         self._global: list[dict[str, Any]] = []
         self._checkpoints: dict[str, int] = {}
+        self._agent_checkpoints: dict[str, dict[str, Any]] = {}
         self._stream_metadata: dict[str, dict[str, Any]] = {}
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
@@ -488,6 +577,22 @@ class InMemoryEventStore:
         self._metrics.append_calls += 1
         async with self._locks[stream_id]:
             current = self._versions.get(stream_id, -1)
+            base_metadata = _normalize_append_metadata(metadata, correlation_id, causation_id)
+            replay_start = current - len(events) + 1
+            if replay_start >= 0:
+                replay_events = [dict(event) for event in self._streams.get(stream_id, [])[replay_start : current + 1]]
+                if _events_match(replay_events, events, base_metadata):
+                    positions = [event["stream_position"] for event in replay_events]
+                    self._logger.info(
+                        "event_store.append.idempotent_replay",
+                        extra={
+                            "stream_id": stream_id,
+                            "event_count": len(events),
+                            "expected_version": expected_version,
+                            "current_version": current,
+                        },
+                    )
+                    return positions
             if current != expected_version:
                 self._metrics.occ_failures += 1
                 self._logger.warning(
@@ -509,12 +614,6 @@ class InMemoryEventStore:
                     "archived_at": None,
                     "metadata": {},
                 }
-
-            base_metadata = dict(metadata or {})
-            if correlation_id is not None:
-                base_metadata["correlation_id"] = correlation_id
-            if causation_id is not None:
-                base_metadata["causation_id"] = causation_id
 
             positions: list[int] = []
             for offset, event in enumerate(events):
@@ -639,6 +738,15 @@ class InMemoryEventStore:
     async def load_checkpoint(self, projection_name: str) -> int:
         self._metrics.load_checkpoint_calls += 1
         return self._checkpoints.get(projection_name, 0)
+
+    async def save_agent_checkpoint(self, session_id: str, checkpoint: dict[str, Any]) -> None:
+        self._metrics.save_checkpoint_calls += 1
+        self._agent_checkpoints[session_id] = dict(checkpoint)
+
+    async def load_agent_checkpoint(self, session_id: str) -> dict[str, Any] | None:
+        self._metrics.load_checkpoint_calls += 1
+        checkpoint = self._agent_checkpoints.get(session_id)
+        return dict(checkpoint) if checkpoint is not None else None
 
     def get_metrics_snapshot(self) -> dict[str, int]:
         return self._metrics.snapshot()
