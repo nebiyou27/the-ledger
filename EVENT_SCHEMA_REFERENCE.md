@@ -158,6 +158,31 @@ use the same envelope:
 For the exact field lists, consult the canonical Pydantic models in
 `ledger/schema/events.py`.
 
+## Aggregate Boundary Reference
+
+This section describes the write-side boundaries around the main aggregates in
+the ledger. It complements the event contracts above by showing:
+
+- which commands the aggregate boundary accepts
+- which invariants are enforced before events are appended
+- which events the command path emits
+- which state transitions are considered valid
+
+| Aggregate | Command accepted | Invariant enforced | Event emitted | Terminal states |
+|---|---|---|---|---|
+| `LoanApplicationAggregate` (`loan-{application_id}`) | `handle_submit_application` | The application must be brand new, and the requested amount must be positive. | `ApplicationSubmitted`, `DocumentUploadRequested` | Any state after `NEW`. |
+| `LoanApplicationAggregate` (`loan-{application_id}`) | `handle_credit_analysis_completed` | The application must still be active, and the same credit result cannot be written twice unless a human review explicitly supersedes it. | `CreditAnalysisCompleted` on the loan stream; `CreditRecordOpened` is also written to the credit stream if that stream does not exist yet. | Final application states are terminal: `APPROVED`, `DECLINED`, `DECLINED_COMPLIANCE`, `REFERRED`. |
+| `LoanApplicationAggregate` (`loan-{application_id}`) | `handle_fraud_screening_completed` | Fraud results are recorded as part of the normal loan workflow and must feed the compliance step that follows. | `FraudScreeningCompleted` on the fraud stream; `FraudScreeningCompleted` and `ComplianceCheckRequested` on the loan stream. | Not explicitly enforced by the handler; the upstream workflow controls when this step is called. |
+| `LoanApplicationAggregate` (`loan-{application_id}`) | `handle_generate_decision` | Low-confidence decisions must be marked as refer, blocked compliance can only end in decline, and every contributing session must already have produced a decision-related event for the same application. | `DecisionGenerated` plus `ApplicationApproved`, `ApplicationDeclined`, or `HumanReviewRequested` on the loan stream. | Final application states are terminal: `APPROVED`, `DECLINED`, `DECLINED_COMPLIANCE`, `REFERRED`. |
+| `LoanApplicationAggregate` (`loan-{application_id}`) | `handle_human_review_completed` | A human reviewer may approve only after compliance is complete and not blocked, and the reviewer decision must be recorded before the final outcome. | `HumanReviewCompleted` plus `ApplicationApproved` or `ApplicationDeclined`; if the reviewer refers the case, only `HumanReviewCompleted` is written. | Final application states are terminal: `APPROVED`, `DECLINED`, `DECLINED_COMPLIANCE`, `REFERRED`. |
+| `AgentSessionAggregate` (`agent-{agent_type}-{session_id}`) | `handle_start_agent_session` | The session must start once, with context already declared, and later events must match the recorded session identity and model version. | `AgentSessionStarted` | `STARTED`, `COMPLETED`, `FAILED`. |
+| `ComplianceRecordAggregate` (`compliance-{application_id}`) | `handle_compliance_check` | Compliance must start from scratch, every rule result must be recorded once, and completion is only allowed when the rule counts and verdict agree. A hard block may end the check early, but only with a blocked verdict. | `ComplianceCheckInitiated`, `ComplianceRulePassed`, `ComplianceRuleFailed`, `ComplianceRuleNoted`, `ComplianceCheckCompleted`; the loan stream also receives `DecisionRequested` or `ApplicationDeclined` afterward. | `COMPLETED`. |
+
+Note: `AuditLedgerAggregate` is intentionally not included in the table because
+the repository exposes integrity checks through `run_integrity_check` rather
+than a write-side command handler. Its boundary is still documented in
+`ledger/domain/aggregates/audit_ledger.py` and `src/integrity/audit_chain.py`.
+
 ## Why This Matters
 
 These events are the permanent record of truth in a regulated financial system.
