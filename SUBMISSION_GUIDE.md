@@ -16,6 +16,9 @@ Start here to understand the architectural reasoning:
 - **[ARCHITECTURE.md](file:///c:/Users/hp/Documents/the-ledger/ARCHITECTURE.md)**  
   Visual Mermaid diagrams showing the command-write path (including the transactional outbox), the asynchronous projection read path, and aggregate boundary isolation.
 
+- **[EVENT_SCHEMA_REFERENCE.md](file:///c:/Users/hp/Documents/the-ledger/EVENT_SCHEMA_REFERENCE.md)**  
+  Canonical event payload documentation, including the live Pydantic schemas and the v1 -> v2 compatibility deltas for versioned events.
+
 ## 2. Test Evidence
 The repository contains 69 tests. **64 pass, 5 are skipped (future agent-integration narratives), 0 fail.**
 - **[test_evidence.txt](file:///c:/Users/hp/Documents/the-ledger/test_evidence.txt)**: Full `pytest` output proving the infrastructure is green.
