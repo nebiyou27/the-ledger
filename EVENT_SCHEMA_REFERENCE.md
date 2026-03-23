@@ -16,6 +16,40 @@ handled.
 - `ledger/upcasting/upcasters.py` applies read-time compatibility fixes for
   historical events.
 
+## Event Naming Conventions
+
+Event names are permanent. Once an event is written to the log, its name
+becomes part of the audit trail and should never need cleanup later.
+
+Use these rules for every new event type:
+
+- Use `PascalCase`.
+- Start with a stable domain noun prefix.
+- End with a past-tense verb.
+- Keep the name concise and specific to the business fact being recorded.
+- Do not use underscores, spaces, `Was`, or auxiliary verbs such as `has` or
+  `did`.
+- Do not rename an existing event type just to improve style; introduce a new
+  event only when the business fact is genuinely different.
+
+Approved pattern:
+
+- `DomainNounPastTenseVerb`
+
+Examples:
+
+- `ApplicationSubmitted`
+- `ComplianceRulePassed`
+- `AgentNodeExecuted`
+
+Rejected examples:
+
+- `LoanWasApproved`
+- `approve_loan_event`
+- `loanSubmitted`
+- `ApplicationSubmit`
+- `Agent_Node_Executed`
+
 ## Shared Event Envelope
 
 Every stored event uses the same outer shape:

@@ -23,6 +23,7 @@ Additional domain streams: `credit-{id}`, `fraud-{id}`, `docpkg-{id}`, `audit-{i
 - Command handlers must load state, validate domain rules, and append atomically with the tracked `expected_version`.
 - The outbox is written in the same transaction as the event append so downstream delivery can be retried safely.
 - Projections are asynchronous, checkpointed, and restart from the last saved global position.
+- Event naming policy lives in `EVENT_SCHEMA_REFERENCE.md#event-naming-conventions` and is enforced by `tests/test_event_naming.py`.
 
 ---
 
