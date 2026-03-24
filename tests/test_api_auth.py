@@ -57,6 +57,19 @@ def test_event_throughput_endpoint_allows_viewer_access(monkeypatch):
     assert payload["peakBucketLabel"] == "10:00"
 
 
+def test_review_queue_metrics_endpoint_allows_reviewer_access(monkeypatch):
+    monkeypatch.setenv("LEDGER_API_KEYS", "reviewer=test-reviewer,admin=test-admin")
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/review-queue/metrics", headers={"Authorization": "Bearer test-reviewer"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "backlogCount" in payload
+    assert "oldestPendingAgeMillis" in payload
+
+
 def test_readiness_endpoint_reports_backend_state():
     app = create_app()
     with TestClient(app) as client:

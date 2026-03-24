@@ -53,6 +53,18 @@ export interface ReviewQueueItem {
   lastUpdated: string
 }
 
+export interface ManualReviewBacklogSnapshot {
+  backlogCount: number
+  pendingCount: number
+  resolvedCount: number
+  assignedCount: number
+  unassignedCount: number
+  averagePendingAgeMillis: number
+  oldestPendingAgeMillis: number
+  oldestPendingAt: string | null
+  staleCount: number
+}
+
 export interface FactItem {
   label: string
   value: string

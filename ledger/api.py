@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
-from ledger.metrics import build_event_throughput_snapshot
+from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot
 from ledger.mcp_server import MCPRuntime, create_runtime
 from ledger.registry.client import ApplicantRegistryClient
 from ledger.schema.events import (
@@ -102,6 +102,13 @@ def create_app() -> FastAPI:
         backend = _get_backend(request)
         await backend.sync()
         return jsonable_encoder(await backend.list_review_queue())
+
+    @app.get("/review-queue/metrics")
+    async def review_queue_metrics(request: Request) -> Any:
+        _require_roles(request, {"reviewer", "admin"})
+        backend = _get_backend(request)
+        await backend.sync()
+        return jsonable_encoder(await backend.list_review_queue_metrics())
 
     @app.get("/compliance")
     async def compliance(request: Request) -> Any:
@@ -359,6 +366,9 @@ class Backend:
         raise NotImplementedError
 
     async def list_review_queue(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def list_review_queue_metrics(self) -> dict[str, Any]:
         raise NotImplementedError
 
     async def list_compliance_rows(self) -> list[dict[str, Any]]:
@@ -726,6 +736,7 @@ def _attach_backend_methods(backend: Backend) -> None:
     backend.get_application_detail = _backend_get_application_detail.__get__(backend, Backend)
     backend.list_timeline = _backend_list_timeline.__get__(backend, Backend)
     backend.list_review_queue = _backend_list_review_queue.__get__(backend, Backend)
+    backend.list_review_queue_metrics = _backend_list_review_queue_metrics.__get__(backend, Backend)
     backend.list_compliance_rows = _backend_list_compliance_rows.__get__(backend, Backend)
     backend.list_agent_performance = _backend_list_agent_performance.__get__(backend, Backend)
     backend.list_stuck_agent_sessions = _backend_list_stuck_agent_sessions.__get__(backend, Backend)
@@ -849,6 +860,10 @@ async def _backend_list_review_queue(self: Backend) -> list[dict[str, Any]]:
         )
     rows.sort(key=lambda row: row["lastUpdated"], reverse=True)
     return rows
+
+
+async def _backend_list_review_queue_metrics(self: Backend) -> dict[str, Any]:
+    return build_manual_review_backlog_snapshot(self.runtime.manual_reviews.all_rows())
 
 
 async def _backend_list_compliance_rows(self: Backend) -> list[dict[str, Any]]:

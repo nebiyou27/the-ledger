@@ -1,6 +1,7 @@
 import {
   AgentPerformanceRecord,
   EventThroughputSnapshot,
+  ManualReviewBacklogSnapshot,
   LoanApplication,
   ProjectionLagSnapshot,
   ReviewQueueItem,
@@ -351,6 +352,38 @@ export const reviewQueue: ReviewQueueItem[] = applications
     assignedReviewer: application.assignedReviewer ?? 'Unassigned',
     lastUpdated: application.lastUpdated
   }))
+
+function buildManualReviewBacklogSnapshot(items: ReviewQueueItem[], asOf = new Date()): ManualReviewBacklogSnapshot {
+  const pendingCount = items.length
+  const assignedCount = items.filter((item) => item.assignedReviewer !== 'Unassigned').length
+  const unassignedCount = pendingCount - assignedCount
+  const pendingAges = items
+    .map((item) => Math.max(0, asOf.getTime() - new Date(item.lastUpdated).getTime()))
+    .filter((age) => Number.isFinite(age))
+  const oldestPendingAgeMillis = pendingAges.length ? Math.max(...pendingAges) : 0
+  const averagePendingAgeMillis = pendingAges.length
+    ? Math.round(pendingAges.reduce((sum, age) => sum + age, 0) / pendingAges.length)
+    : 0
+
+  return {
+    backlogCount: pendingCount,
+    pendingCount,
+    resolvedCount: 0,
+    assignedCount,
+    unassignedCount,
+    averagePendingAgeMillis,
+    oldestPendingAgeMillis,
+    oldestPendingAt: items.reduce<string | null>((oldest, item) => {
+      if (oldest === null) {
+        return item.lastUpdated
+      }
+      return new Date(item.lastUpdated).getTime() < new Date(oldest).getTime() ? item.lastUpdated : oldest
+    }, null),
+    staleCount: pendingAges.filter((age) => age >= 24 * 60 * 60 * 1000).length
+  }
+}
+
+export const manualReviewBacklogSnapshot = buildManualReviewBacklogSnapshot(reviewQueue)
 
 export const complianceRows = applications.map((application) => ({
   applicationId: application.id,

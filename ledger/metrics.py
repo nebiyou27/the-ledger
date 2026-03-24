@@ -14,6 +14,42 @@ def _to_datetime(value: Any) -> datetime | None:
     return None
 
 
+def build_manual_review_backlog_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pending_rows = [row for row in rows if str(row.get("status", "")).upper() == "PENDING"]
+    resolved_rows = [row for row in rows if str(row.get("status", "")).upper() == "RESOLVED"]
+    assigned_rows = [row for row in pending_rows if row.get("assigned_to")]
+    unassigned_rows = [row for row in pending_rows if not row.get("assigned_to")]
+
+    now = datetime.now(timezone.utc)
+    pending_ages: list[int] = []
+    oldest_pending_at: datetime | None = None
+
+    for row in pending_rows:
+        requested_at = _to_datetime(row.get("requested_at"))
+        if requested_at is None:
+            continue
+        age_ms = max(0, int((now - requested_at).total_seconds() * 1000))
+        pending_ages.append(age_ms)
+        if oldest_pending_at is None or requested_at < oldest_pending_at:
+            oldest_pending_at = requested_at
+
+    backlog_count = len(pending_rows)
+    average_pending_age_ms = int(sum(pending_ages) / len(pending_ages)) if pending_ages else 0
+    oldest_pending_age_ms = max(pending_ages) if pending_ages else 0
+
+    return {
+        "backlogCount": backlog_count,
+        "pendingCount": backlog_count,
+        "resolvedCount": len(resolved_rows),
+        "assignedCount": len(assigned_rows),
+        "unassignedCount": len(unassigned_rows),
+        "averagePendingAgeMillis": average_pending_age_ms,
+        "oldestPendingAgeMillis": oldest_pending_age_ms,
+        "oldestPendingAt": oldest_pending_at.isoformat() if oldest_pending_at else None,
+        "staleCount": sum(1 for age_ms in pending_ages if age_ms >= 24 * 60 * 60 * 1000),
+    }
+
+
 async def build_event_throughput_snapshot(
     store,
     *,

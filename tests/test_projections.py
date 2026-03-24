@@ -13,6 +13,7 @@ from ledger.projections import (
     ComplianceAuditProjection,
     ProjectionDaemon,
 )
+from ledger.metrics import build_manual_review_backlog_snapshot
 from src.commands.handlers import (
     handle_credit_analysis_completed,
     handle_start_agent_session,
@@ -66,6 +67,37 @@ async def test_projection_daemon_updates_checkpoints_and_summary():
     assert row is not None
     assert row["applicant_id"] == "COMP-100"
     assert row["decision"] == "REFER"
+
+
+def test_manual_review_backlog_snapshot_counts_pending_reviews():
+    snapshot = build_manual_review_backlog_snapshot(
+        [
+            {
+                "application_id": "APP-1",
+                "status": "PENDING",
+                "assigned_to": "analyst-a",
+                "requested_at": "2026-03-19T10:00:00Z",
+            },
+            {
+                "application_id": "APP-2",
+                "status": "PENDING",
+                "requested_at": "2026-03-19T08:00:00Z",
+            },
+            {
+                "application_id": "APP-3",
+                "status": "RESOLVED",
+                "assigned_to": "analyst-b",
+                "requested_at": "2026-03-18T08:00:00Z",
+            },
+        ]
+    )
+
+    assert snapshot["backlogCount"] == 2
+    assert snapshot["pendingCount"] == 2
+    assert snapshot["assignedCount"] == 1
+    assert snapshot["unassignedCount"] == 1
+    assert snapshot["resolvedCount"] == 1
+    assert snapshot["oldestPendingAt"] == "2026-03-19T08:00:00+00:00"
 
 
 @pytest.mark.asyncio

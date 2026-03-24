@@ -208,3 +208,7 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     assert health["ok"] is True
     assert health["p99_target_ms"] == 10
     assert "application_summary" in health["projections"]
+
+    backlog = _resource_json(await server.read_resource("ledger://metrics/manual-review-backlog"))
+    assert backlog["backlogCount"] == 0
+    assert backlog["resolvedCount"] == 0
