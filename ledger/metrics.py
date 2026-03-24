@@ -4,6 +4,13 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+STREAM_SIZE_FAMILIES: tuple[tuple[str, str], ...] = (
+    ("LoanApplication", "loan-"),
+    ("ComplianceRecord", "compliance-"),
+    ("AgentSession", "agent-"),
+    ("AuditLedger", "audit-"),
+)
+
 
 def _to_datetime(value: Any) -> datetime | None:
     if isinstance(value, datetime):
@@ -48,6 +55,48 @@ def build_manual_review_backlog_snapshot(rows: list[dict[str, Any]]) -> dict[str
         "oldestPendingAt": oldest_pending_at.isoformat() if oldest_pending_at else None,
         "staleCount": sum(1 for age_ms in pending_ages if age_ms >= 24 * 60 * 60 * 1000),
     }
+
+
+async def compute_stream_sizes(store) -> list[dict[str, Any]]:
+    snapshots: dict[str, dict[str, Any]] = {
+        stream_name: {
+            "streamName": stream_name,
+            "eventCount": 0,
+            "streamPosition": -1,
+            "firstEventAt": None,
+            "lastEventAt": None,
+        }
+        for stream_name, _prefix in STREAM_SIZE_FAMILIES
+    }
+
+    async for event in store.load_all(from_position=0):
+        stream_id = str(event.get("stream_id") or "")
+        recorded_at = _to_datetime(event.get("recorded_at"))
+
+        for stream_name, prefix in STREAM_SIZE_FAMILIES:
+            if not stream_id.startswith(prefix):
+                continue
+
+            snapshot = snapshots[stream_name]
+            snapshot["eventCount"] += 1
+
+            stream_position = int(event.get("stream_position", -1))
+            if stream_position > snapshot["streamPosition"]:
+                snapshot["streamPosition"] = stream_position
+
+            if recorded_at is None:
+                break
+
+            current_first = _to_datetime(snapshot["firstEventAt"])
+            if current_first is None or recorded_at < current_first:
+                snapshot["firstEventAt"] = recorded_at.isoformat()
+
+            current_last = _to_datetime(snapshot["lastEventAt"])
+            if current_last is None or recorded_at > current_last:
+                snapshot["lastEventAt"] = recorded_at.isoformat()
+            break
+
+    return [snapshots[stream_name] for stream_name, _prefix in STREAM_SIZE_FAMILIES]
 
 
 async def build_event_throughput_snapshot(

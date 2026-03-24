@@ -14,7 +14,7 @@ from fastmcp import FastMCP
 from ledger.exceptions import OptimisticConcurrencyError
 from ledger.integrity import run_integrity_check
 from ledger.event_store import EventStore, InMemoryEventStore
-from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot
+from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot, compute_stream_sizes
 from ledger.projections import (
     AgentSessionFailureProjection,
     AgentPerformanceProjection,
@@ -677,6 +677,15 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
                 bucket_minutes=bucket_minutes,
             )
         )
+
+    @server.resource(
+        "ledger://metrics/streams",
+        name="stream_sizes",
+        mime_type="application/json",
+        description="Logical stream size snapshots for the four aggregate families.",
+    )
+    async def stream_sizes() -> list[dict[str, Any]]:
+        return _json_text(await compute_stream_sizes(runtime.store))
 
     return server
 

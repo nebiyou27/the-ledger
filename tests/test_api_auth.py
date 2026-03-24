@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
+from ledger.event_store import InMemoryEventStore
 from ledger.api import create_app
 
 
@@ -55,6 +58,50 @@ def test_event_throughput_endpoint_allows_viewer_access(monkeypatch):
     payload = response.json()
     assert payload["totalEvents"] == 9
     assert payload["peakBucketLabel"] == "10:00"
+
+
+def test_stream_sizes_endpoint_allows_viewer_access(monkeypatch):
+    monkeypatch.setenv("LEDGER_API_KEYS", "viewer=test-viewer,admin=test-admin")
+
+    store = InMemoryEventStore()
+    seeded_events = [
+        ("loan-API-1", [{"event_type": "ApplicationSubmitted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc)}], -1),
+        ("compliance-API-1", [{"event_type": "ComplianceCheckInitiated", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 10, tzinfo=timezone.utc)}], -1),
+        ("agent-credit_analysis-sess-1", [{"event_type": "AgentSessionStarted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 15, tzinfo=timezone.utc)}], -1),
+        ("audit-API-1", [{"event_type": "LedgerEntryRecorded", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 20, tzinfo=timezone.utc)}], -1),
+    ]
+
+    class _Backend:
+        def __init__(self):
+            self.store = store
+            self._seeded = False
+
+        async def sync(self):
+            if not self._seeded:
+                for stream_id, events, expected_version in seeded_events:
+                    await self.store.append(stream_id, events, expected_version=expected_version)
+                self._seeded = True
+            return {"ok": True}
+
+        async def close(self):
+            return None
+
+    async def _build_backend():
+        return _Backend()
+
+    monkeypatch.setattr("ledger.api._build_backend", _build_backend)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/metrics/streams", headers={"Authorization": "Bearer test-viewer"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    by_name = {row["streamName"]: row for row in payload}
+    assert by_name["LoanApplication"]["eventCount"] == 1
+    assert by_name["ComplianceRecord"]["eventCount"] == 1
+    assert by_name["AgentSession"]["eventCount"] == 1
+    assert by_name["AuditLedger"]["eventCount"] == 1
 
 
 def test_review_queue_metrics_endpoint_allows_reviewer_access(monkeypatch):

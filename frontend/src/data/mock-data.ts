@@ -5,6 +5,7 @@ import {
   LoanApplication,
   ProjectionLagSnapshot,
   ReviewQueueItem,
+  StreamSizeSnapshot,
   TimelineEvent
 } from '@/types/loan'
 
@@ -383,7 +384,41 @@ function buildManualReviewBacklogSnapshot(items: ReviewQueueItem[], asOf = new D
   }
 }
 
+function buildStreamSizeSnapshot(items: TimelineEvent[]): StreamSizeSnapshot {
+  const families = [
+    { streamName: 'LoanApplication', prefix: 'loan-' },
+    { streamName: 'ComplianceRecord', prefix: 'compliance-' },
+    { streamName: 'AgentSession', prefix: 'agent-' },
+    { streamName: 'AuditLedger', prefix: 'audit-' }
+  ]
+
+  return families.map(({ streamName, prefix }) => {
+    const familyEvents = items.filter((item) => item.streamId.startsWith(prefix))
+    const firstEventAt = familyEvents.reduce<string | null>((earliest, item) => {
+      if (earliest === null) {
+        return item.timestamp
+      }
+      return new Date(item.timestamp).getTime() < new Date(earliest).getTime() ? item.timestamp : earliest
+    }, null)
+    const lastEventAt = familyEvents.reduce<string | null>((latest, item) => {
+      if (latest === null) {
+        return item.timestamp
+      }
+      return new Date(item.timestamp).getTime() > new Date(latest).getTime() ? item.timestamp : latest
+    }, null)
+
+    return {
+      streamName,
+      eventCount: familyEvents.length,
+      streamPosition: familyEvents.length ? Math.max(...familyEvents.map((item) => item.version)) : -1,
+      firstEventAt,
+      lastEventAt
+    }
+  })
+}
+
 export const manualReviewBacklogSnapshot = buildManualReviewBacklogSnapshot(reviewQueue)
+export const streamSizeSnapshot = buildStreamSizeSnapshot(timelineEvents)
 
 export const complianceRows = applications.map((application) => ({
   applicationId: application.id,

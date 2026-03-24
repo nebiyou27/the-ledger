@@ -160,3 +160,13 @@ export interface EventThroughputSnapshot {
   peakBucketLabel: string
   buckets: EventThroughputBucket[]
 }
+
+export interface StreamSizeSnapshotEntry {
+  streamName: string
+  eventCount: number
+  streamPosition: number
+  firstEventAt: string | null
+  lastEventAt: string | null
+}
+
+export type StreamSizeSnapshot = StreamSizeSnapshotEntry[]

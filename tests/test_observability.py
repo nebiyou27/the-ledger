@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from ledger.event_store import InMemoryEventStore
-from ledger.metrics import build_event_throughput_snapshot
+from ledger.metrics import build_event_throughput_snapshot, compute_stream_sizes
 from ledger.observability import StoreMetrics
 from ledger.projections.base import Projection
 from ledger.projections.daemon import ProjectionDaemon
@@ -116,3 +116,74 @@ async def test_event_throughput_snapshot_uses_recent_window_and_buckets():
     assert snapshot["eventsPerHour"] == 3.0
     assert snapshot["peakBucketEvents"] == 2
     assert len(snapshot["buckets"]) == 12
+
+
+@pytest.mark.asyncio
+async def test_compute_stream_sizes_rolls_up_logical_stream_families():
+    store = InMemoryEventStore()
+    await store.append(
+        "loan-OBS-10",
+        [
+            {"event_type": "ApplicationSubmitted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 0, tzinfo=timezone.utc)},
+            {"event_type": "DocumentUploadRequested", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 5, tzinfo=timezone.utc)},
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "loan-OBS-11",
+        [
+            {"event_type": "ApplicationSubmitted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 10, tzinfo=timezone.utc)}
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "compliance-OBS-10",
+        [
+            {"event_type": "ComplianceCheckInitiated", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 12, tzinfo=timezone.utc)}
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "agent-credit_analysis-sess-10",
+        [
+            {"event_type": "AgentSessionStarted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 3, tzinfo=timezone.utc)},
+            {"event_type": "AgentSessionCompleted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 4, tzinfo=timezone.utc)},
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "audit-OBS-10",
+        [
+            {"event_type": "LedgerEntryRecorded", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 20, tzinfo=timezone.utc)}
+        ],
+        expected_version=-1,
+    )
+
+    snapshot = await compute_stream_sizes(store)
+    by_name = {row["streamName"]: row for row in snapshot}
+
+    assert by_name["LoanApplication"]["eventCount"] == 3
+    assert by_name["LoanApplication"]["streamPosition"] == 1
+    assert by_name["LoanApplication"]["firstEventAt"] == "2026-03-24T09:00:00+00:00"
+    assert by_name["LoanApplication"]["lastEventAt"] == "2026-03-24T09:10:00+00:00"
+    assert by_name["ComplianceRecord"]["eventCount"] == 1
+    assert by_name["AgentSession"]["eventCount"] == 2
+    assert by_name["AuditLedger"]["eventCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compute_stream_sizes_returns_empty_snapshots_for_missing_families():
+    store = InMemoryEventStore()
+
+    snapshot = await compute_stream_sizes(store)
+
+    assert [row["streamName"] for row in snapshot] == [
+        "LoanApplication",
+        "ComplianceRecord",
+        "AgentSession",
+        "AuditLedger",
+    ]
+    assert all(row["eventCount"] == 0 for row in snapshot)
+    assert all(row["streamPosition"] == -1 for row in snapshot)
+    assert all(row["firstEventAt"] is None for row in snapshot)
+    assert all(row["lastEventAt"] is None for row in snapshot)

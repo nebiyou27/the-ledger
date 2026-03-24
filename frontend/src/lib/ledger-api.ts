@@ -5,10 +5,18 @@ import {
   eventThroughputSnapshot,
   manualReviewBacklogSnapshot,
   projectionLagSnapshot,
+  streamSizeSnapshot,
   reviewQueue,
   timelineEvents
 } from '@/data/mock-data'
-import { EventThroughputSnapshot, LoanApplication, ManualReviewBacklogSnapshot, ProjectionLagSnapshot, ReviewQueueItem } from '@/types/loan'
+import {
+  EventThroughputSnapshot,
+  LoanApplication,
+  ManualReviewBacklogSnapshot,
+  ProjectionLagSnapshot,
+  ReviewQueueItem,
+  StreamSizeSnapshot
+} from '@/types/loan'
 
 const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
 const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
@@ -72,6 +80,10 @@ export async function listProjectionLag() {
 
 export async function listEventThroughput() {
   return loadOrMock<EventThroughputSnapshot>('/metrics/events', eventThroughputSnapshot)
+}
+
+export async function listStreamSizes() {
+  return loadOrMock<StreamSizeSnapshot>('/metrics/streams', streamSizeSnapshot)
 }
 
 export async function refreshProjections() {

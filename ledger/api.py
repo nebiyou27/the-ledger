@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
-from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot
+from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot, compute_stream_sizes
 from ledger.mcp_server import MCPRuntime, create_runtime
 from ledger.registry.client import ApplicantRegistryClient
 from ledger.schema.events import (
@@ -151,6 +151,13 @@ def create_app() -> FastAPI:
                 bucket_minutes=bucket_minutes,
             )
         )
+
+    @app.get("/metrics/streams")
+    async def stream_sizes(request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
+        backend = _get_backend(request)
+        await backend.sync()
+        return jsonable_encoder(await compute_stream_sizes(backend.store))
 
     @app.get("/agents/stuck-sessions")
     async def stuck_sessions(request: Request, timeout_ms: int = 600000) -> Any:

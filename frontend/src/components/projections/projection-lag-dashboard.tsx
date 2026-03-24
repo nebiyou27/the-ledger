@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { KpiCard } from '@/components/ui/kpi-card'
-import { dataSourceNote, listEventThroughput, listProjectionLag, refreshProjections } from '@/lib/ledger-api'
+import { dataSourceNote, listEventThroughput, listProjectionLag, listStreamSizes, refreshProjections } from '@/lib/ledger-api'
 import { formatDuration } from '@/lib/utils'
-import { EventThroughputSnapshot, ProjectionLagSnapshot } from '@/types/loan'
+import { EventThroughputSnapshot, ProjectionLagSnapshot, StreamSizeSnapshot } from '@/types/loan'
 
 const projectionMeta: Record<
   string,
@@ -75,13 +75,16 @@ function formatProjectionName(name: string) {
 
 export function ProjectionLagDashboard({
   snapshot: initialSnapshot,
-  throughput: initialThroughput
+  throughput: initialThroughput,
+  streamSizes: initialStreamSizes
 }: {
   snapshot: ProjectionLagSnapshot
   throughput: EventThroughputSnapshot
+  streamSizes: StreamSizeSnapshot
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
   const [throughput, setThroughput] = useState(initialThroughput)
+  const [streamSizes, setStreamSizes] = useState(initialStreamSizes)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
@@ -109,6 +112,27 @@ export function ProjectionLagDashboard({
   const laggingProjections = rows.filter((row) => row.lag.positionsBehind > 0 || row.lag.millis > row.meta.targetMillis).length
   const healthyProjections = rows.length - laggingProjections
   const worstLag = rows[0]?.lag.millis ?? 0
+  const totalStreamEvents = streamSizes.reduce((sum, entry) => sum + entry.eventCount, 0)
+  const largestStream = streamSizes.reduce(
+    (winner, entry) => (entry.eventCount > winner.eventCount ? entry : winner),
+    streamSizes[0] ?? {
+      streamName: 'LoanApplication',
+      eventCount: 0,
+      streamPosition: -1,
+      firstEventAt: null,
+      lastEventAt: null
+    }
+  )
+  const emptyStreams = streamSizes.filter((entry) => entry.eventCount === 0).length
+  const latestStreamEvent = streamSizes.reduce<string | null>((latest, entry) => {
+    if (!entry.lastEventAt) {
+      return latest
+    }
+    if (latest === null) {
+      return entry.lastEventAt
+    }
+    return new Date(entry.lastEventAt).getTime() > new Date(latest).getTime() ? entry.lastEventAt : latest
+  }, null)
   const peakBucket =
     throughput.buckets.reduce(
       (winner, bucket) => (bucket.events > winner.events ? bucket : winner),
@@ -128,8 +152,10 @@ export function ProjectionLagDashboard({
       await refreshProjections()
       const nextSnapshot = await listProjectionLag()
       const nextThroughput = await listEventThroughput()
+      const nextStreamSizes = await listStreamSizes()
       setSnapshot(nextSnapshot)
       setThroughput(nextThroughput)
+      setStreamSizes(nextStreamSizes)
       setLastRefreshedAt(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }))
     } catch (error) {
       setRefreshError(error instanceof Error ? error.message : 'Refresh failed')
@@ -155,6 +181,17 @@ export function ProjectionLagDashboard({
           label="Peak Event Hour"
           value={`${throughput.eventsPerHour.toFixed(0)} / hr`}
           helperText={`Latest event ${throughput.latestEventAt ? new Date(throughput.latestEventAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'unknown'}`}
+        />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-4">
+        <KpiCard label="Stream Events" value={totalStreamEvents.toString()} helperText="Total events across the four logical stream families" />
+        <KpiCard label="Largest Family" value={largestStream.streamName} helperText={`${largestStream.eventCount} events`}/>
+        <KpiCard label="Empty Families" value={emptyStreams.toString()} helperText="Families with no recorded events" />
+        <KpiCard
+          label="Latest Stream Event"
+          value={latestStreamEvent ? new Date(latestStreamEvent).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'Unknown'}
+          helperText="Most recent family event timestamp"
         />
       </div>
 
@@ -287,12 +324,87 @@ export function ProjectionLagDashboard({
               </div>
             </Card>
 
+            <Card title="Stream Size Monitor" eyebrow="Logical stream families">
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Families Tracked</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900">{streamSizes.length}</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Latest Event</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                      {latestStreamEvent ? new Date(latestStreamEvent).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'Unknown'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {streamSizes.map((entry) => {
+                    const maxEvents = Math.max(1, largestStream.eventCount)
+                    const width = Math.max(8, Math.round((entry.eventCount / maxEvents) * 100))
+                    return (
+                      <div key={entry.streamName} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <div className="text-base font-semibold text-slate-900">{entry.streamName}</div>
+                            <div className="mt-1 text-sm text-slate-500">
+                              {entry.eventCount} events observed across live stream history
+                            </div>
+                          </div>
+                          <div className="text-right text-sm text-slate-500">
+                            <div className="font-semibold text-slate-900">
+                              {entry.streamPosition >= 0 ? `Position ${entry.streamPosition}` : 'Empty'}
+                            </div>
+                            <div>{entry.firstEventAt ? `First ${new Date(entry.firstEventAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : 'No events yet'}</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4">
+                          <div className="flex items-center justify-between text-xs text-slate-500">
+                            <span>Relative size</span>
+                            <span>{entry.eventCount} total</span>
+                          </div>
+                          <div className="mt-2 h-2 rounded-full bg-white ring-1 ring-slate-200">
+                            <div
+                              className="h-2 rounded-full bg-gradient-to-r from-slate-900 via-teal-500 to-cyan-400"
+                              style={{ width: `${width}%` }}
+                              title={`${entry.streamName}: ${entry.eventCount} events`}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-2xl bg-white px-3 py-2 ring-1 ring-slate-200">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">First Event</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {entry.firstEventAt
+                                ? new Date(entry.firstEventAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                                : 'None'}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl bg-white px-3 py-2 ring-1 ring-slate-200">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Last Event</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">
+                              {entry.lastEventAt
+                                ? new Date(entry.lastEventAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+                                : 'None'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </Card>
+
             <Card title="Operational Notes" eyebrow="How to read this" className="bg-slate-950 text-slate-100 shadow-slate-900/20">
               <div className="space-y-3 text-sm leading-6 text-slate-300">
                 <p>Throughput measures how many events arrived during the most recent observed window.</p>
                 <p>Positions behind measures how many events a projection still needs to process.</p>
                 <p>Latency is derived from the newest event timestamp versus the last processed event timestamp.</p>
-                <p>If you connect the Python backend, this panel reads live lag from <code>/projections/lag</code> and throughput from <code>/metrics/events</code>.</p>
+                <p>If you connect the Python backend, this panel reads live lag from <code>/projections/lag</code>, throughput from <code>/metrics/events</code>, and stream sizes from <code>/metrics/streams</code>.</p>
               </div>
             </Card>
 

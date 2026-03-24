@@ -212,3 +212,10 @@ async def test_mcp_server_exposes_the_phase_6_surface():
     backlog = _resource_json(await server.read_resource("ledger://metrics/manual-review-backlog"))
     assert backlog["backlogCount"] == 0
     assert backlog["resolvedCount"] == 0
+
+    stream_sizes = _resource_json(await server.read_resource("ledger://metrics/streams"))
+    by_name = {row["streamName"]: row for row in stream_sizes}
+    assert by_name["LoanApplication"]["eventCount"] > 0
+    assert by_name["ComplianceRecord"]["eventCount"] > 0
+    assert by_name["AgentSession"]["eventCount"] > 0
+    assert by_name["AuditLedger"]["eventCount"] > 0
