@@ -79,6 +79,7 @@ async def test_mcp_server_exposes_the_phase_6_surface():
             "agent_type": "decision_orchestrator",
             "model_version": "mcp-model-1",
             "context_source": "projection-backed",
+            "started_at": "2026-03-20T09:45:00+00:00",
         },
     )
 
@@ -190,6 +191,14 @@ async def test_mcp_server_exposes_the_phase_6_surface():
 
     agent_rows = _resource_json(await server.read_resource("ledger://agents/credit-agent/performance"))
     assert any(row["agent_id"] == "credit-agent" for row in agent_rows)
+
+    stuck_sessions = _resource_json(
+        await server.read_resource("ledger://agents/stuck-sessions/600000")
+    )
+    assert any(row["session_id"] == "decision-session-1" for row in stuck_sessions)
+    stuck = next(row for row in stuck_sessions if row["session_id"] == "decision-session-1")
+    assert stuck["status"] == "STARTED"
+    assert stuck["is_overdue"] is True
 
     audit_trail = _resource_json(await server.read_resource("ledger://applications/mcp-app-1/audit-trail"))
     assert isinstance(audit_trail, list)

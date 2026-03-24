@@ -1,3 +1,4 @@
+from .agent_failure import AgentSessionFailureProjection
 from .agent_performance import AgentPerformanceProjection
 from .application_summary import ApplicationSummaryProjection
 from .base import Projection, ProjectionLag
@@ -11,6 +12,7 @@ __all__ = [
     "ProjectionLag",
     "ProjectionDaemon",
     "ApplicationSummaryProjection",
+    "AgentSessionFailureProjection",
     "AgentPerformanceProjection",
     "ComplianceAuditProjection",
     "ManualReviewsProjection",

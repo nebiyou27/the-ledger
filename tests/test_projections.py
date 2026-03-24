@@ -8,6 +8,7 @@ import pytest
 from ledger.event_store import InMemoryEventStore
 from ledger.projections import (
     AgentPerformanceProjection,
+    AgentSessionFailureProjection,
     ApplicationSummaryProjection,
     ComplianceAuditProjection,
     ProjectionDaemon,
@@ -188,6 +189,109 @@ async def test_agent_performance_projection_and_lag():
 
     lag = daemon.get_lag("agent_performance")
     assert lag.positions_behind == 0
+
+
+@pytest.mark.asyncio
+async def test_agent_session_failure_projection_finds_overdue_open_sessions():
+    store = InMemoryEventStore()
+    t0 = datetime(2026, 3, 19, 12, 0, tzinfo=timezone.utc)
+
+    await store.append(
+        "agent-credit_analysis-sess-open",
+        [
+            {
+                "event_type": "AgentSessionStarted",
+                "payload": {
+                    "session_id": "sess-open",
+                    "agent_type": "credit_analysis",
+                    "agent_id": "agent-open",
+                    "application_id": "APEX-901",
+                    "model_version": "model-v1",
+                    "context_source": "fresh",
+                    "started_at": _iso(t0),
+                },
+                "recorded_at": _iso(t0),
+            }
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "agent-credit_analysis-sess-complete",
+        [
+            {
+                "event_type": "AgentSessionStarted",
+                "payload": {
+                    "session_id": "sess-complete",
+                    "agent_type": "credit_analysis",
+                    "agent_id": "agent-complete",
+                    "application_id": "APEX-902",
+                    "model_version": "model-v1",
+                    "context_source": "fresh",
+                    "started_at": _iso(t0 + timedelta(minutes=1)),
+                },
+                "recorded_at": _iso(t0 + timedelta(minutes=1)),
+            },
+            {
+                "event_type": "AgentSessionCompleted",
+                "payload": {
+                    "session_id": "sess-complete",
+                    "agent_type": "credit_analysis",
+                    "application_id": "APEX-902",
+                    "total_nodes_executed": 3,
+                    "total_llm_calls": 1,
+                    "total_tokens_used": 250,
+                    "total_cost_usd": 0.12,
+                    "total_duration_ms": 5000,
+                    "completed_at": _iso(t0 + timedelta(minutes=2)),
+                },
+                "recorded_at": _iso(t0 + timedelta(minutes=2)),
+            },
+        ],
+        expected_version=-1,
+    )
+    await store.append(
+        "agent-credit_analysis-sess-failed",
+        [
+            {
+                "event_type": "AgentSessionStarted",
+                "payload": {
+                    "session_id": "sess-failed",
+                    "agent_type": "credit_analysis",
+                    "agent_id": "agent-failed",
+                    "application_id": "APEX-903",
+                    "model_version": "model-v1",
+                    "context_source": "fresh",
+                    "started_at": _iso(t0 + timedelta(minutes=3)),
+                },
+                "recorded_at": _iso(t0 + timedelta(minutes=3)),
+            },
+            {
+                "event_type": "AgentSessionFailed",
+                "payload": {
+                    "session_id": "sess-failed",
+                    "agent_type": "credit_analysis",
+                    "application_id": "APEX-903",
+                    "error_type": "TimeoutError",
+                    "error_message": "upstream timeout",
+                    "recoverable": False,
+                    "failed_at": _iso(t0 + timedelta(minutes=4)),
+                },
+                "recorded_at": _iso(t0 + timedelta(minutes=4)),
+            },
+        ],
+        expected_version=-1,
+    )
+
+    projection = AgentSessionFailureProjection()
+    daemon = ProjectionDaemon(store, [projection])
+    while await daemon._process_batch():
+        pass
+
+    overdue = projection.get_stuck_sessions(timeout_ms=15 * 60 * 1000, now=t0 + timedelta(minutes=20))
+
+    assert [row["session_id"] for row in overdue] == ["sess-open"]
+    assert overdue[0]["is_overdue"] is True
+    assert overdue[0]["status"] == "STARTED"
 
 
 @pytest.mark.asyncio

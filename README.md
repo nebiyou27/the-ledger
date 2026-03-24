@@ -70,6 +70,7 @@ The demo output includes a regulatory package JSON and a short narrative report.
 ## Scripts
 
 - `scripts/replay_projection.py` clears a projection checkpoint and replays that projection from `global_position = 0`; it requires `--confirm` to protect the current projection state.
+- For 2am ops triage, use the agent stuck-session surface: MCP resource `ledger://agents/stuck-sessions/{timeout_ms}` or API `GET /agents/stuck-sessions?timeout_ms=...` returns sessions that started but never completed; for Apex, start with `timeout_ms=900000` (15 minutes).
 
 ## Testing
 

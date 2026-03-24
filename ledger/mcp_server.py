@@ -15,6 +15,7 @@ from ledger.exceptions import OptimisticConcurrencyError
 from ledger.integrity import run_integrity_check
 from ledger.event_store import EventStore, InMemoryEventStore
 from ledger.projections import (
+    AgentSessionFailureProjection,
     AgentPerformanceProjection,
     ApplicationSummaryProjection,
     ComplianceAuditProjection,
@@ -101,6 +102,7 @@ def _json_text(value: Any) -> str:
 class MCPRuntime:
     store: Any
     application_summary: ApplicationSummaryProjection
+    agent_session_failures: AgentSessionFailureProjection
     agent_performance: AgentPerformanceProjection
     compliance_audit: ComplianceAuditProjection
     manual_reviews: ManualReviewsProjection
@@ -166,16 +168,18 @@ def create_runtime(store: Any | None = None) -> MCPRuntime:
         else:
             store = InMemoryEventStore()
     application_summary = ApplicationSummaryProjection()
+    agent_session_failures = AgentSessionFailureProjection()
     agent_performance = AgentPerformanceProjection()
     compliance_audit = ComplianceAuditProjection()
     manual_reviews = ManualReviewsProjection()
     daemon = ProjectionDaemon(
         store,
-        [application_summary, agent_performance, compliance_audit, manual_reviews],
+        [application_summary, agent_session_failures, agent_performance, compliance_audit, manual_reviews],
     )
     return MCPRuntime(
         store=store,
         application_summary=application_summary,
+        agent_session_failures=agent_session_failures,
         agent_performance=agent_performance,
         compliance_audit=compliance_audit,
         manual_reviews=manual_reviews,
@@ -593,6 +597,16 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
     )
     async def agent_performance(agent_id: str) -> list[dict[str, Any]]:
         rows = [row for row in runtime.agent_performance.all_rows() if row.get("agent_id") == agent_id]
+        return _json_text(rows)
+
+    @server.resource(
+        "ledger://agents/stuck-sessions/{timeout_ms}",
+        name="agent_stuck_sessions",
+        mime_type="application/json",
+        description="Agent sessions that have not completed within the timeout window.",
+    )
+    async def agent_stuck_sessions(timeout_ms: int = 600000) -> list[dict[str, Any]]:
+        rows = runtime.agent_session_failures.get_stuck_sessions(int(timeout_ms), now=_utcnow())
         return _json_text(rows)
 
     @server.resource(

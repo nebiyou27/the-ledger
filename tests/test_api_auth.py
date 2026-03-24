@@ -37,3 +37,40 @@ def test_readiness_endpoint_reports_backend_state():
     assert payload["ok"] is True
     assert payload["ready"] is True
     assert "store" in payload
+
+
+def test_stuck_sessions_endpoint_uses_requested_timeout(monkeypatch):
+    calls: list[int] = []
+
+    class _Backend:
+        async def sync(self):
+            return {"ok": True}
+
+        async def close(self):
+            return None
+
+        async def list_stuck_agent_sessions(self, timeout_ms: int = 600000):
+            calls.append(timeout_ms)
+            return [
+                {
+                    "sessionId": "sess-open",
+                    "status": "STARTED",
+                    "ageMs": 901000,
+                    "timeoutMs": timeout_ms,
+                }
+            ]
+
+    async def _build_backend():
+        return _Backend()
+
+    monkeypatch.setattr("ledger.api._build_backend", _build_backend)
+
+    app = create_app()
+    with TestClient(app) as client:
+        response = client.get("/agents/stuck-sessions?timeout_ms=901000")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["sessionId"] == "sess-open"
+    assert payload[0]["timeoutMs"] == 901000
+    assert calls == [901000]

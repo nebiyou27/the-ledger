@@ -25,6 +25,10 @@ Additional domain streams: `credit-{id}`, `fraud-{id}`, `docpkg-{id}`, `audit-{i
 - Projections are asynchronous, checkpointed, and restart from the last saved global position.
 - Event naming policy lives in `EVENT_SCHEMA_REFERENCE.md#event-naming-conventions` and is enforced by `tests/test_event_naming.py`.
 
+## Backup and Restore
+
+The backup and restore procedure is intentionally deferred until the infrastructure decisions are finalized, but the operational rule is already fixed: any restore must be followed by a reset of projection checkpoints so projections rebuild from a known-good position instead of trusting stale `projection_checkpoints` rows. Retention planning should also account for GDPR-oriented crypto-shredding, which means the backup lifecycle needs a path for destroying encryption material when data must be rendered unrecoverable even if the backup media itself is retained.
+
 ## Stream Naming Conventions
 
 Stream IDs are durable contracts, so every family needs a stable prefix and a

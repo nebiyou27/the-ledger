@@ -116,6 +116,13 @@ def create_app() -> FastAPI:
         await backend.sync()
         return jsonable_encoder(await backend.list_agent_performance())
 
+    @app.get("/agents/stuck-sessions")
+    async def stuck_sessions(request: Request, timeout_ms: int = 600000) -> Any:
+        _require_roles(request, {"analyst", "admin"})
+        backend = _get_backend(request)
+        await backend.sync()
+        return jsonable_encoder(await backend.list_stuck_agent_sessions(timeout_ms))
+
     @app.post("/refresh")
     async def refresh(request: Request) -> Any:
         _require_roles(request, {"admin"})
@@ -329,6 +336,9 @@ class Backend:
         raise NotImplementedError
 
     async def list_agent_performance(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    async def list_stuck_agent_sessions(self, timeout_ms: int = 600000) -> list[dict[str, Any]]:
         raise NotImplementedError
 
 
@@ -689,6 +699,7 @@ def _attach_backend_methods(backend: Backend) -> None:
     backend.list_review_queue = _backend_list_review_queue.__get__(backend, Backend)
     backend.list_compliance_rows = _backend_list_compliance_rows.__get__(backend, Backend)
     backend.list_agent_performance = _backend_list_agent_performance.__get__(backend, Backend)
+    backend.list_stuck_agent_sessions = _backend_list_stuck_agent_sessions.__get__(backend, Backend)
 
 
 async def _backend_get_application_detail(self: Backend, application_id: str) -> dict[str, Any] | None:
@@ -858,6 +869,28 @@ async def _backend_list_agent_performance(self: Backend) -> list[dict[str, Any]]
                 "approved": round(decisions * _to_float(row.get("approve_rate", 0.0))),
                 "declined": round(decisions * _to_float(row.get("decline_rate", 0.0))),
                 "humanReview": round(decisions * _to_float(row.get("refer_rate", 0.0))),
+            }
+        )
+    return rows
+
+
+async def _backend_list_stuck_agent_sessions(self: Backend, timeout_ms: int = 600000) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in self.runtime.agent_session_failures.get_stuck_sessions(int(timeout_ms), now=_now()):
+        rows.append(
+            {
+                "sessionId": row.get("session_id"),
+                "applicationId": row.get("application_id"),
+                "agentId": row.get("agent_id"),
+                "agentType": row.get("agent_type"),
+                "agentName": _pretty_agent_name(str(row.get("agent_id", "unknown-agent"))),
+                "modelVersion": row.get("model_version"),
+                "status": row.get("status"),
+                "startedAt": _iso(row.get("started_at")),
+                "lastEventAt": _iso(row.get("last_event_at")),
+                "lastEventType": row.get("last_event_type"),
+                "ageMs": int(row.get("age_ms", 0)),
+                "timeoutMs": int(row.get("timeout_ms", timeout_ms)),
             }
         )
     return rows
