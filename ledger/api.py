@@ -116,6 +116,22 @@ def create_app() -> FastAPI:
         await backend.sync()
         return jsonable_encoder(await backend.list_agent_performance())
 
+    @app.get("/projections/lag")
+    async def projection_lag(request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
+        backend = _get_backend(request)
+        await backend.sync()
+        lag_snapshot = backend.runtime.get_lag_snapshot()
+        return jsonable_encoder(
+            {
+                name: {
+                    "positionsBehind": lag.get("positions_behind", 0),
+                    "millis": lag.get("millis", 0),
+                }
+                for name, lag in lag_snapshot.items()
+            }
+        )
+
     @app.get("/agents/stuck-sessions")
     async def stuck_sessions(request: Request, timeout_ms: int = 600000) -> Any:
         _require_roles(request, {"analyst", "admin"})

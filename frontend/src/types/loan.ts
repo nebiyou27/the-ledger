@@ -120,3 +120,10 @@ export interface AgentPerformanceRecord {
   declined: number
   humanReview: number
 }
+
+export interface ProjectionLagEntry {
+  positionsBehind: number
+  millis: number
+}
+
+export type ProjectionLagSnapshot = Record<string, ProjectionLagEntry>

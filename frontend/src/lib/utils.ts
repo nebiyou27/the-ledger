@@ -31,3 +31,19 @@ export function formatDateOnly(value: string) {
     year: 'numeric'
   }).format(new Date(value))
 }
+
+export function formatDuration(value: number) {
+  if (value < 1000) {
+    return `${value} ms`
+  }
+
+  const totalSeconds = Math.round(value / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  if (minutes === 0) {
+    return `${seconds}s`
+  }
+
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`
+}

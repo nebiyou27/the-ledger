@@ -1,4 +1,4 @@
-import { AgentPerformanceRecord, LoanApplication, ReviewQueueItem, TimelineEvent } from '@/types/loan'
+import { AgentPerformanceRecord, LoanApplication, ProjectionLagSnapshot, ReviewQueueItem, TimelineEvent } from '@/types/loan'
 
 function makeEvent(
   eventName: string,
@@ -400,3 +400,11 @@ export const agentPerformance: AgentPerformanceRecord[] = [
     humanReview: 21
   }
 ]
+
+export const projectionLagSnapshot: ProjectionLagSnapshot = {
+  application_summary: { positionsBehind: 0, millis: 180 },
+  agent_session_failures: { positionsBehind: 1, millis: 760 },
+  agent_performance: { positionsBehind: 0, millis: 95 },
+  compliance_audit: { positionsBehind: 3, millis: 2460 },
+  manual_reviews: { positionsBehind: 0, millis: 120 }
+}

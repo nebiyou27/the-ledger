@@ -11,7 +11,8 @@ const navItems = [
   { href: '/review', label: 'Human Review Queue' },
   { href: '/audit', label: 'Event Timeline' },
   { href: '/compliance', label: 'Compliance Audit' },
-  { href: '/agents', label: 'Agent Performance' }
+  { href: '/agents', label: 'Agent Performance' },
+  { href: '/projections', label: 'Projection Lag' }
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {

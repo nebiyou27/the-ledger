@@ -1,5 +1,5 @@
-import { agentPerformance, applications, complianceRows, reviewQueue, timelineEvents } from '@/data/mock-data'
-import { LoanApplication, ReviewQueueItem } from '@/types/loan'
+import { agentPerformance, applications, complianceRows, projectionLagSnapshot, reviewQueue, timelineEvents } from '@/data/mock-data'
+import { LoanApplication, ProjectionLagSnapshot, ReviewQueueItem } from '@/types/loan'
 
 const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
 const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
@@ -51,6 +51,30 @@ export async function listComplianceRows() {
 
 export async function listAgentPerformance() {
   return loadOrMock('/agents', agentPerformance)
+}
+
+export async function listProjectionLag() {
+  return loadOrMock<ProjectionLagSnapshot>('/projections/lag', projectionLagSnapshot)
+}
+
+export async function refreshProjections() {
+  if (!baseUrl) {
+    return { ok: true, mock: true as const }
+  }
+
+  const response = await fetch(`${baseUrl}/refresh`, {
+    method: 'POST',
+    cache: 'no-store',
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
+  })
+
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = payload?.detail ?? payload?.message ?? `Request failed with status ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+  }
+
+  return payload
 }
 
 export async function submitIntakeApplication(formData: FormData) {
