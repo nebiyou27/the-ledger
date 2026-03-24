@@ -5,6 +5,7 @@ import {
   eventThroughputSnapshot,
   manualReviewBacklogSnapshot,
   projectionLagSnapshot,
+  replayProgressSnapshot,
   streamSizeSnapshot,
   reviewQueue,
   timelineEvents
@@ -14,6 +15,7 @@ import {
   LoanApplication,
   ManualReviewBacklogSnapshot,
   ProjectionLagSnapshot,
+  ReplayProgressSnapshot,
   ReviewQueueItem,
   StreamSizeSnapshot
 } from '@/types/loan'
@@ -76,6 +78,10 @@ export async function listAgentPerformance() {
 
 export async function listProjectionLag() {
   return loadOrMock<ProjectionLagSnapshot>('/projections/lag', projectionLagSnapshot)
+}
+
+export async function getReplayProgress() {
+  return loadOrMock<ReplayProgressSnapshot>('/replay/progress', replayProgressSnapshot)
 }
 
 export async function listEventThroughput() {

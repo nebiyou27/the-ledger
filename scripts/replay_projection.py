@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -14,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv()
 
 from ledger.event_store import EventStore
+from ledger.metrics import REPLAY_EVENT_TYPES, set_replay_progress
 from ledger.projections import (
     AgentPerformanceProjection,
     ApplicationSummaryProjection,
@@ -77,7 +79,10 @@ def _format_duration(seconds: float | None) -> str:
 async def _count_events(store: EventStore) -> int:
     pool = store._require_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT COUNT(*) AS total_events FROM events")
+        row = await conn.fetchrow(
+            "SELECT COUNT(*) AS total_events FROM events WHERE event_type <> ALL($1::text[])",
+            list(REPLAY_EVENT_TYPES),
+        )
     return int(row["total_events"]) if row else 0
 
 
@@ -92,8 +97,23 @@ async def _replay_projection(store: EventStore, projection_name: str) -> None:
     projection = factory()
     daemon = ProjectionDaemon(store, [projection])
     total_events = await _count_events(store)
+    started_at = time.perf_counter()
+    started_iso = datetime.now(timezone.utc).isoformat()
+    next_progress_mark = 100
 
     await _clear_checkpoint(store, projection.name)
+    await set_replay_progress(
+        store,
+        {
+            "event_type": "REPLAY_STARTED",
+            "projection_name": projection.name,
+            "events_processed": 0,
+            "total_events": total_events,
+            "percent_complete": 0.0,
+            "started_at": started_iso,
+            "estimated_completion": None,
+        },
+    )
 
     print(
         f"Starting replay for {projection.__class__.__name__} "
@@ -102,47 +122,120 @@ async def _replay_projection(store: EventStore, projection_name: str) -> None:
     )
 
     if total_events == 0:
+        await set_replay_progress(
+            store,
+            {
+                "event_type": "REPLAY_COMPLETED",
+                "projection_name": projection.name,
+                "events_processed": 0,
+                "total_events": 0,
+                "percent_complete": 100.0,
+                "started_at": started_iso,
+                "estimated_completion": started_iso,
+            },
+        )
         print(f"[{projection.name}] No events found. Checkpoint cleared and replay complete.", flush=True)
         return
 
-    start = time.perf_counter()
     batch_size = 500
+    processed_events = 0
 
-    while True:
-        processed = await daemon._process_batch(batch_size=batch_size)
-        checkpoint = await store.load_checkpoint(projection.name)
-        completed = max(0, checkpoint)
-        current_global_position = checkpoint - 1
-        percent = min(100.0, (completed / total_events) * 100.0) if total_events else 100.0
-        elapsed = time.perf_counter() - start
-        eta_seconds: float | None = None
-        if completed > 0 and completed < total_events:
-            eta_seconds = (elapsed / completed) * (total_events - completed)
+    try:
+        while True:
+            processed = await daemon._process_batch(batch_size=batch_size)
+            processed_events = min(total_events, processed_events + processed)
 
-        print(
-            f"[{projection.name}] global_position={current_global_position} "
-            f"total_events={total_events} "
-            f"progress={percent:.2f}% "
-            f"eta={_format_duration(eta_seconds)}",
-            flush=True,
+            checkpoint = await store.load_checkpoint(projection.name)
+            current_global_position = checkpoint - 1
+            percent = min(100.0, (processed_events / total_events) * 100.0) if total_events else 100.0
+            elapsed = time.perf_counter() - started_at
+            eta_seconds: float | None = None
+            if processed_events > 0 and processed_events < total_events:
+                eta_seconds = (elapsed / processed_events) * (total_events - processed_events)
+
+            while processed_events >= next_progress_mark and next_progress_mark < total_events:
+                progress_percent = min(100.0, (next_progress_mark / total_events) * 100.0)
+                eta_iso: str | None = None
+                if processed_events > 0 and processed_events < total_events:
+                    projected_remaining = total_events - next_progress_mark
+                    eta_seconds_at_mark = max(0.0, (elapsed / processed_events) * projected_remaining)
+                    eta_iso = (datetime.now(timezone.utc) + timedelta(seconds=eta_seconds_at_mark)).isoformat()
+                await set_replay_progress(
+                    store,
+                    {
+                        "event_type": "REPLAY_PROGRESS",
+                        "projection_name": projection.name,
+                        "events_processed": next_progress_mark,
+                        "total_events": total_events,
+                        "percent_complete": progress_percent,
+                        "started_at": started_iso,
+                        "estimated_completion": eta_iso,
+                    },
+                )
+                next_progress_mark += 100
+
+            print(
+                f"[{projection.name}] global_position={current_global_position} "
+                f"total_events={total_events} "
+                f"progress={percent:.2f}% "
+                f"eta={_format_duration(eta_seconds)}",
+                flush=True,
+            )
+
+            if processed == 0:
+                break
+
+        final_checkpoint = await store.load_checkpoint(projection.name)
+        if final_checkpoint >= total_events:
+            await set_replay_progress(
+                store,
+                {
+                    "event_type": "REPLAY_COMPLETED",
+                    "projection_name": projection.name,
+                    "events_processed": total_events,
+                    "total_events": total_events,
+                    "percent_complete": 100.0,
+                    "started_at": started_iso,
+                    "estimated_completion": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            print(
+                f"[{projection.name}] Replay complete. "
+                f"checkpoint={final_checkpoint}, total_events={total_events}.",
+                flush=True,
+            )
+        else:
+            await set_replay_progress(
+                store,
+                {
+                    "event_type": "REPLAY_FAILED",
+                    "projection_name": projection.name,
+                    "events_processed_before_failure": processed_events,
+                    "total_events": total_events,
+                    "percent_complete": round((processed_events / total_events) * 100.0, 2) if total_events else 0.0,
+                    "started_at": started_iso,
+                    "reason": "Replay stopped before reaching the end of the event log.",
+                },
+            )
+            print(
+                f"[{projection.name}] Replay stopped early. "
+                f"checkpoint={final_checkpoint}, total_events={total_events}.",
+                flush=True,
+            )
+    except Exception as exc:
+        await set_replay_progress(
+            store,
+            {
+                "event_type": "REPLAY_FAILED",
+                "projection_name": projection.name,
+                "events_processed_before_failure": processed_events,
+                "total_events": total_events,
+                "percent_complete": round((processed_events / total_events) * 100.0, 2) if total_events else 0.0,
+                "started_at": started_iso,
+                "reason": str(exc),
+            },
         )
-
-        if processed == 0:
-            break
-
-    final_checkpoint = await store.load_checkpoint(projection.name)
-    if final_checkpoint >= total_events:
-        print(
-            f"[{projection.name}] Replay complete. "
-            f"checkpoint={final_checkpoint}, total_events={total_events}.",
-            flush=True,
-        )
-    else:
-        print(
-            f"[{projection.name}] Replay stopped early. "
-            f"checkpoint={final_checkpoint}, total_events={total_events}.",
-            flush=True,
-        )
+        raise
 
 
 def _build_parser() -> argparse.ArgumentParser:

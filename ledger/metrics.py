@@ -4,6 +4,14 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+REPLAY_PROGRESS_STREAM = "system-replay-progress"
+REPLAY_EVENT_TYPES: tuple[str, ...] = (
+    "REPLAY_STARTED",
+    "REPLAY_PROGRESS",
+    "REPLAY_COMPLETED",
+    "REPLAY_FAILED",
+)
+
 STREAM_SIZE_FAMILIES: tuple[tuple[str, str], ...] = (
     ("LoanApplication", "loan-"),
     ("ComplianceRecord", "compliance-"),
@@ -19,6 +27,113 @@ def _to_datetime(value: Any) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     return None
+
+
+def _iso_or_none(value: Any) -> str | None:
+    parsed = _to_datetime(value)
+    return parsed.isoformat() if parsed is not None else None
+
+
+def _empty_replay_progress() -> dict[str, Any]:
+    return {
+        "status": "IDLE",
+        "is_replaying": False,
+        "projection_name": None,
+        "events_processed": 0,
+        "total_events": 0,
+        "percent_complete": 0.0,
+        "started_at": None,
+        "estimated_completion": None,
+        "last_updated": None,
+    }
+
+
+def _status_from_event_type(event_type: str) -> str:
+    if event_type == "REPLAY_STARTED" or event_type == "REPLAY_PROGRESS":
+        return "REPLAYING"
+    if event_type == "REPLAY_COMPLETED":
+        return "COMPLETED"
+    if event_type == "REPLAY_FAILED":
+        return "FAILED"
+    return "IDLE"
+
+
+def _events_processed_from_payload(payload: dict[str, Any]) -> int:
+    if "events_processed_before_failure" in payload:
+        return int(payload.get("events_processed_before_failure") or 0)
+    return int(payload.get("events_processed") or 0)
+
+
+async def set_replay_progress(store, update: dict[str, Any]) -> list[int]:
+    event_type = str(update.get("event_type") or "REPLAY_PROGRESS").upper()
+    if event_type not in REPLAY_EVENT_TYPES:
+        raise ValueError(f"Unsupported replay progress event type '{event_type}'")
+
+    payload = dict(update)
+    now = _to_datetime(payload.get("last_updated")) or datetime.now(timezone.utc)
+    started_at = _to_datetime(payload.get("started_at")) or now
+    payload["started_at"] = started_at.isoformat()
+    payload["last_updated"] = now.isoformat()
+    payload["projection_name"] = payload.get("projection_name")
+    payload["events_processed"] = int(payload.get("events_processed") or 0)
+    payload["total_events"] = int(payload.get("total_events") or 0)
+    payload["percent_complete"] = float(payload.get("percent_complete") or 0.0)
+    payload["estimated_completion"] = _iso_or_none(payload.get("estimated_completion"))
+    payload["status"] = _status_from_event_type(event_type)
+
+    if event_type == "REPLAY_FAILED" and "events_processed_before_failure" not in payload:
+        payload["events_processed_before_failure"] = payload["events_processed"]
+    if event_type == "REPLAY_COMPLETED":
+        payload["percent_complete"] = 100.0
+
+    current_version = await store.stream_version(REPLAY_PROGRESS_STREAM)
+    return await store.append(
+        REPLAY_PROGRESS_STREAM,
+        [
+            {
+                "event_type": event_type,
+                "event_version": 1,
+                "payload": payload,
+                "recorded_at": now,
+            }
+        ],
+        expected_version=current_version,
+    )
+
+
+async def get_replay_progress(store) -> dict[str, Any]:
+    latest_event: dict[str, Any] | None = None
+    async for event in store.load_all(from_position=0, event_types=list(REPLAY_EVENT_TYPES)):
+        latest_event = event
+
+    if latest_event is None:
+        return _empty_replay_progress()
+
+    payload = dict(latest_event.get("payload") or {})
+    event_type = str(latest_event.get("event_type") or "")
+    status = str(payload.get("status") or _status_from_event_type(event_type))
+    is_replaying = status == "REPLAYING"
+    events_processed = _events_processed_from_payload(payload)
+    total_events = int(payload.get("total_events") or 0)
+    percent_complete = payload.get("percent_complete")
+    if percent_complete is None:
+        percent_complete = (events_processed / total_events * 100.0) if total_events else 0.0
+
+    started_at = _iso_or_none(payload.get("started_at"))
+    estimated_completion = _iso_or_none(payload.get("estimated_completion"))
+    last_updated = _iso_or_none(payload.get("last_updated")) or _iso_or_none(latest_event.get("recorded_at"))
+
+    return {
+        "status": status,
+        "is_replaying": is_replaying,
+        "projection_name": payload.get("projection_name"),
+        "events_processed": events_processed,
+        "total_events": total_events,
+        "percent_complete": round(float(percent_complete), 2),
+        "started_at": started_at,
+        "estimated_completion": estimated_completion,
+        "last_updated": last_updated,
+    }
 
 
 def build_manual_review_backlog_snapshot(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -113,6 +228,8 @@ async def build_event_throughput_snapshot(
     events: list[datetime] = []
     latest_event_at: datetime | None = None
     async for event in store.load_all(from_position=0):
+        if str(event.get("event_type") or "") in REPLAY_EVENT_TYPES:
+            continue
         recorded_at = _to_datetime(event.get("recorded_at"))
         if recorded_at is None:
             continue

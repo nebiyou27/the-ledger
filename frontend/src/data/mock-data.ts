@@ -4,6 +4,7 @@ import {
   ManualReviewBacklogSnapshot,
   LoanApplication,
   ProjectionLagSnapshot,
+  ReplayProgressSnapshot,
   ReviewQueueItem,
   StreamSizeSnapshot,
   TimelineEvent
@@ -482,6 +483,18 @@ export const projectionLagSnapshot: ProjectionLagSnapshot = {
   agent_performance: { positionsBehind: 0, millis: 95 },
   compliance_audit: { positionsBehind: 3, millis: 2460 },
   manual_reviews: { positionsBehind: 0, millis: 120 }
+}
+
+export const replayProgressSnapshot: ReplayProgressSnapshot = {
+  status: 'COMPLETED',
+  is_replaying: false,
+  projection_name: 'compliance_audit',
+  events_processed: 1280,
+  total_events: 1280,
+  percent_complete: 100,
+  started_at: '2026-03-19T11:00:00Z',
+  estimated_completion: '2026-03-19T11:07:20Z',
+  last_updated: '2026-03-19T11:07:20Z'
 }
 
 export const eventThroughputSnapshot: EventThroughputSnapshot = {

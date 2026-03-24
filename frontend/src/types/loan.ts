@@ -5,6 +5,7 @@ export type PipelineStageName = 'Documents' | 'Credit' | 'Fraud' | 'Compliance' 
 export type StageState = 'complete' | 'in-progress' | 'blocked' | 'pending'
 export type TimelineDomain = 'loan' | 'credit' | 'fraud' | 'compliance' | 'agent session'
 export type DecisionOutcome = 'Approve' | 'Decline' | 'Human Review'
+export type ReplayProgressStatus = 'IDLE' | 'REPLAYING' | 'COMPLETED' | 'FAILED'
 
 export interface KPIRecord {
   label: string
@@ -170,3 +171,15 @@ export interface StreamSizeSnapshotEntry {
 }
 
 export type StreamSizeSnapshot = StreamSizeSnapshotEntry[]
+
+export interface ReplayProgressSnapshot {
+  status: ReplayProgressStatus
+  is_replaying: boolean
+  projection_name: string | null
+  events_processed: number
+  total_events: number
+  percent_complete: number
+  started_at: string | null
+  estimated_completion: string | null
+  last_updated: string | null
+}

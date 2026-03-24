@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { KpiCard } from '@/components/ui/kpi-card'
-import { dataSourceNote, listEventThroughput, listProjectionLag, listStreamSizes, refreshProjections } from '@/lib/ledger-api'
-import { formatDuration } from '@/lib/utils'
-import { EventThroughputSnapshot, ProjectionLagSnapshot, StreamSizeSnapshot } from '@/types/loan'
+import { dataSourceNote, getReplayProgress, listEventThroughput, listProjectionLag, listStreamSizes, refreshProjections } from '@/lib/ledger-api'
+import { formatDateTime, formatDuration } from '@/lib/utils'
+import { EventThroughputSnapshot, ProjectionLagSnapshot, ReplayProgressSnapshot, StreamSizeSnapshot } from '@/types/loan'
 
 const projectionMeta: Record<
   string,
@@ -73,18 +73,46 @@ function formatProjectionName(name: string) {
   return projectionMeta[name]?.label ?? name.replaceAll('_', ' ')
 }
 
+const replayStatusMeta: Record<
+  ReplayProgressSnapshot['status'],
+  {
+    label: string
+    className: string
+  }
+> = {
+  IDLE: {
+    label: 'IDLE',
+    className: 'bg-slate-100 text-slate-600 ring-slate-200'
+  },
+  REPLAYING: {
+    label: 'REPLAYING',
+    className: 'bg-amber-50 text-amber-800 ring-amber-200'
+  },
+  COMPLETED: {
+    label: 'COMPLETED',
+    className: 'bg-emerald-50 text-emerald-700 ring-emerald-200'
+  },
+  FAILED: {
+    label: 'FAILED',
+    className: 'bg-rose-50 text-rose-700 ring-rose-200'
+  }
+}
+
 export function ProjectionLagDashboard({
   snapshot: initialSnapshot,
   throughput: initialThroughput,
-  streamSizes: initialStreamSizes
+  streamSizes: initialStreamSizes,
+  replayProgress: initialReplayProgress
 }: {
   snapshot: ProjectionLagSnapshot
   throughput: EventThroughputSnapshot
   streamSizes: StreamSizeSnapshot
+  replayProgress: ReplayProgressSnapshot
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
   const [throughput, setThroughput] = useState(initialThroughput)
   const [streamSizes, setStreamSizes] = useState(initialStreamSizes)
+  const [replayProgress, setReplayProgress] = useState(initialReplayProgress)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
@@ -143,6 +171,9 @@ export function ProjectionLagDashboard({
         endAt: throughput.windowStartAt
       }
     )
+  const replayStatus = replayStatusMeta[replayProgress.status]
+  const isReplayIdle = replayProgress.status === 'IDLE'
+  const replayPercent = Math.max(0, Math.min(100, replayProgress.percent_complete))
 
   async function handleRefresh() {
     setIsRefreshing(true)
@@ -153,9 +184,11 @@ export function ProjectionLagDashboard({
       const nextSnapshot = await listProjectionLag()
       const nextThroughput = await listEventThroughput()
       const nextStreamSizes = await listStreamSizes()
+      const nextReplayProgress = await getReplayProgress()
       setSnapshot(nextSnapshot)
       setThroughput(nextThroughput)
       setStreamSizes(nextStreamSizes)
+      setReplayProgress(nextReplayProgress)
       setLastRefreshedAt(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }))
     } catch (error) {
       setRefreshError(error instanceof Error ? error.message : 'Refresh failed')
@@ -166,6 +199,81 @@ export function ProjectionLagDashboard({
 
   return (
     <div className="space-y-6">
+      <Card
+        title="Replay Progress"
+        eyebrow="Projection rebuild telemetry"
+        actions={
+          <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset ${replayStatus.className}`}>
+            {replayStatus.label}
+          </span>
+        }
+      >
+        {isReplayIdle ? (
+          <div className="rounded-3xl border border-dashed border-slate-200 bg-slate-50/70 px-4 py-5 text-sm text-slate-500">
+            No replay is running right now.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="text-base font-semibold text-slate-900">
+                  {replayProgress.projection_name ? formatProjectionName(replayProgress.projection_name) : 'Replay in progress'}
+                </div>
+                <div className="mt-1 text-sm text-slate-500">
+                  {replayProgress.is_replaying ? 'The event log is being reprocessed from the beginning.' : 'The replay finished recently.'}
+                </div>
+              </div>
+              <div className="text-right text-sm text-slate-500">
+                <div className="font-semibold text-slate-900">
+                  {replayProgress.events_processed.toLocaleString()} / {replayProgress.total_events.toLocaleString()} events
+                </div>
+                <div>{replayProgress.started_at ? `Started ${formatDateTime(replayProgress.started_at)}` : 'Started time unavailable'}</div>
+              </div>
+            </div>
+
+            {replayProgress.is_replaying ? (
+              <div>
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>Replay progress</span>
+                  <span>{replayPercent.toFixed(1)}%</span>
+                </div>
+                <div className="mt-2 h-2 rounded-full bg-white ring-1 ring-slate-200">
+                  <div
+                    className="h-2 rounded-full bg-gradient-to-r from-slate-900 via-teal-500 to-cyan-400 transition-[width]"
+                    style={{ width: `${replayPercent}%` }}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-slate-200">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Events Processed</div>
+                <div className="mt-1 text-2xl font-semibold text-slate-900">
+                  {replayProgress.events_processed.toLocaleString()}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-slate-200">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Percent Complete</div>
+                <div className="mt-1 text-2xl font-semibold text-slate-900">{replayPercent.toFixed(1)}%</div>
+              </div>
+              <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-slate-200">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Estimated Completion</div>
+                <div className="mt-1 text-lg font-semibold text-slate-900">
+                  {replayProgress.estimated_completion ? formatDateTime(replayProgress.estimated_completion) : 'Calculating'}
+                </div>
+              </div>
+              <div className="rounded-2xl bg-white px-4 py-3 ring-1 ring-slate-200">
+                <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Last Updated</div>
+                <div className="mt-1 text-lg font-semibold text-slate-900">
+                  {replayProgress.last_updated ? formatDateTime(replayProgress.last_updated) : 'Unknown'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
       <div className="grid gap-4 xl:grid-cols-4">
         <KpiCard label="Events in Window" value={throughput.totalEvents.toString()} helperText={`Last ${throughput.windowMinutes} minutes of activity`} />
         <KpiCard label="Event Throughput" value={`${throughput.eventsPerMinute.toFixed(1)} / min`} helperText="Average append rate over the observed window" />

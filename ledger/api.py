@@ -20,7 +20,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
-from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot, compute_stream_sizes
+from ledger.metrics import (
+    build_event_throughput_snapshot,
+    build_manual_review_backlog_snapshot,
+    compute_stream_sizes,
+    get_replay_progress,
+)
 from ledger.mcp_server import MCPRuntime, create_runtime
 from ledger.registry.client import ApplicantRegistryClient
 from ledger.schema.events import (
@@ -139,6 +144,12 @@ def create_app() -> FastAPI:
                 for name, lag in lag_snapshot.items()
             }
         )
+
+    @app.get("/replay/progress")
+    async def replay_progress(request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "admin"})
+        backend = _get_backend(request)
+        return jsonable_encoder(await get_replay_progress(backend.store))
 
     @app.get("/metrics/events")
     async def event_throughput(request: Request, window_minutes: int = 60, bucket_minutes: int = 5) -> Any:

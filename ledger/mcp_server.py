@@ -14,7 +14,12 @@ from fastmcp import FastMCP
 from ledger.exceptions import OptimisticConcurrencyError
 from ledger.integrity import run_integrity_check
 from ledger.event_store import EventStore, InMemoryEventStore
-from ledger.metrics import build_event_throughput_snapshot, build_manual_review_backlog_snapshot, compute_stream_sizes
+from ledger.metrics import (
+    build_event_throughput_snapshot,
+    build_manual_review_backlog_snapshot,
+    compute_stream_sizes,
+    get_replay_progress,
+)
 from ledger.projections import (
     AgentSessionFailureProjection,
     AgentPerformanceProjection,
@@ -686,6 +691,15 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
     )
     async def stream_sizes() -> list[dict[str, Any]]:
         return _json_text(await compute_stream_sizes(runtime.store))
+
+    @server.resource(
+        "ledger://replay/progress",
+        name="replay_progress",
+        mime_type="application/json",
+        description="Live replay progress snapshot for the current projection rebuild.",
+    )
+    async def replay_progress() -> dict[str, Any]:
+        return _json_text(await get_replay_progress(runtime.store))
 
     return server
 
