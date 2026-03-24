@@ -34,11 +34,12 @@ WHEN THIS WORKS:
     → FraudScreeningRequested event on loan stream
 """
 from __future__ import annotations
-import time, json
-from dataclasses import asdict
-from datetime import datetime
+import json
+import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import TypedDict, Annotated
+from typing import Any, Annotated, TypedDict
 from uuid import uuid4
 
 from langgraph.graph import StateGraph, END
@@ -55,6 +56,12 @@ from ledger.schema.events import (
     CreditDecision, RiskTier, FinancialFacts,
 )
 
+try:
+    from ledger.agents.ollama_client import OllamaClient
+    _ollama = OllamaClient()
+except ImportError:
+    _ollama = None
+
 
 # ─── STATE ────────────────────────────────────────────────────────────────────
 
@@ -63,24 +70,37 @@ class CreditState(TypedDict):
     application_id: str
     session_id: str
     applicant_id: str | None
-    requested_amount_usd: float | None
-    loan_purpose: str | None
-    # Registry data
-    company_profile: dict | None
-    historical_financials: list[dict] | None
-    compliance_flags: list[dict] | None
-    loan_history: list[dict] | None
-    # Document data
-    extracted_facts: dict | None
-    quality_flags: list[str] | None
-    document_ids_consumed: list[str] | None
-    # Analysis output
-    credit_decision: dict | None
-    policy_violations: list[str] | None
+    loan_amount: float | None
+    annual_income: float | None
+    loan_term_months: int | None
+    monthly_debt: float | None
+    annual_rate: float | None
+    dti_ratio: float | None
+    loan_to_income_ratio: float | None
+    monthly_payment_estimate: float | None
+    prior_defaults: int | None
+    prior_loans: int | None
+    account_age_months: int | None
+    factor_scores: dict | None
+    credit_score: float | None
+    policy_outcome: str | None
+    hard_gate: str | None
+    explanation: str | None
+    key_factors: list[str] | None
+    confidence: str | None
     # Plumbing
     errors: list[str]
     output_events: list[dict]
     next_agent: str | None
+
+
+@dataclass(slots=True)
+class CreditAnalysisError(ValueError):
+    field: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        ValueError.__init__(self, f"{self.field}: {self.reason}")
 
 
 # ─── AGENT ────────────────────────────────────────────────────────────────────
@@ -88,81 +108,78 @@ class CreditState(TypedDict):
 class CreditAnalysisAgent(BaseApexAgent):
 
     def build_graph(self) -> Any:
-        from typing import Any
         g = StateGraph(CreditState)
         g.add_node("validate_inputs",          self._node_validate_inputs)
-        g.add_node("open_credit_record",       self._node_open_credit_record)
         g.add_node("load_applicant_registry",  self._node_load_registry)
         g.add_node("load_extracted_facts",     self._node_load_facts)
         g.add_node("analyze_credit_risk",      self._node_analyze)
         g.add_node("apply_policy_constraints", self._node_policy)
+        g.add_node("explain_decision",         self._node_explain_decision)
         g.add_node("write_output",             self._node_write_output)
 
         g.set_entry_point("validate_inputs")
-        g.add_edge("validate_inputs",          "open_credit_record")
-        g.add_edge("open_credit_record",       "load_applicant_registry")
+        g.add_edge("validate_inputs",          "load_applicant_registry")
         g.add_edge("load_applicant_registry",  "load_extracted_facts")
         g.add_edge("load_extracted_facts",     "analyze_credit_risk")
         g.add_edge("analyze_credit_risk",      "apply_policy_constraints")
-        g.add_edge("apply_policy_constraints", "write_output")
+        g.add_edge("apply_policy_constraints", "explain_decision")
+        g.add_edge("explain_decision",         "write_output")
         g.add_edge("write_output",             END)
         return g.compile()
 
     def _initial_state(self, application_id: str) -> CreditState:
         return CreditState(
             application_id=application_id, session_id=self.session_id,
-            applicant_id=None, requested_amount_usd=None, loan_purpose=None,
-            company_profile=None, historical_financials=None,
-            compliance_flags=None, loan_history=None,
-            extracted_facts=None, quality_flags=None, document_ids_consumed=None,
-            credit_decision=None, policy_violations=None,
+            applicant_id=None, loan_amount=None, annual_income=None,
+            loan_term_months=None, monthly_debt=None, annual_rate=None,
+            dti_ratio=None, loan_to_income_ratio=None, monthly_payment_estimate=None,
+            prior_defaults=None, prior_loans=None, account_age_months=None,
+            factor_scores=None, credit_score=None, policy_outcome=None,
+            hard_gate=None, explanation=None, key_factors=None, confidence=None,
             errors=[], output_events=[], next_agent=None,
         )
 
     # ── NODE 1: VALIDATE INPUTS ───────────────────────────────────────────────
     async def _node_validate_inputs(self, state: CreditState) -> CreditState:
         t = time.time()
-        app_id = state["application_id"]
-        errors: list[str] = []
+        applicant_id = str(state.get("applicant_id") or "").strip()
+        if not applicant_id:
+            raise CreditAnalysisError(field="applicant_id", reason="must be a non-empty string")
 
-        app = await LoanApplicationAggregate.load(self.store, app_id)
-        if app.state not in (
-            ApplicationState.DOCUMENTS_PROCESSED,
-            ApplicationState.CREDIT_ANALYSIS_REQUESTED,
-        ):
-            errors.append(
-                f"Expected DOCUMENTS_PROCESSED or CREDIT_ANALYSIS_REQUESTED, got {app.state.value}"
-            )
+        try:
+            loan_amount = float(state.get("loan_amount"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="loan_amount", reason="must be > 0") from exc
+        if loan_amount <= 0:
+            raise CreditAnalysisError(field="loan_amount", reason="must be > 0")
 
-        if not app.applicant_id:
-            errors.append("Missing applicant_id on LoanApplication aggregate")
-        if app.requested_amount_usd is None:
-            errors.append("Missing requested_amount_usd on LoanApplication aggregate")
-        if not app.loan_purpose:
-            errors.append("Missing loan_purpose on LoanApplication aggregate")
+        try:
+            annual_income = float(state.get("annual_income"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="annual_income", reason="must be > 0") from exc
+        if annual_income <= 0:
+            raise CreditAnalysisError(field="annual_income", reason="must be > 0")
 
-        pkg_events = await self.store.load_stream(f"docpkg-{app_id}")
-        if not any(ev.get("event_type") == "PackageReadyForAnalysis" for ev in pkg_events):
-            errors.append("Document package is not ready for analysis")
+        try:
+            loan_term_months = int(state.get("loan_term_months"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="loan_term_months", reason="must be between 12 and 360 inclusive") from exc
+        if not 12 <= loan_term_months <= 360:
+            raise CreditAnalysisError(field="loan_term_months", reason="must be between 12 and 360 inclusive")
 
         ms = int((time.time() - t) * 1000)
-        if errors:
-            raise ValueError(f"Input validation failed: {errors}")
-
-        loan_purpose = app.loan_purpose.value if hasattr(app.loan_purpose, "value") else str(app.loan_purpose)
-        requested_amount = float(app.requested_amount_usd) if app.requested_amount_usd is not None else None
         await self._record_node_execution(
             "validate_inputs",
-            ["application_id"],
-            ["applicant_id", "requested_amount_usd", "loan_purpose"],
+            ["applicant_id", "loan_amount", "annual_income", "loan_term_months"],
+            ["applicant_id", "loan_amount", "annual_income", "loan_term_months"],
             ms,
         )
         return {
             **state,
-            "applicant_id": app.applicant_id,
-            "requested_amount_usd": requested_amount,
-            "loan_purpose": loan_purpose,
-            "errors": errors,
+            "applicant_id": applicant_id,
+            "loan_amount": loan_amount,
+            "annual_income": annual_income,
+            "loan_term_months": loan_term_months,
         }
     # ── NODE 2: OPEN CREDIT RECORD ────────────────────────────────────────────
     async def _node_open_credit_record(self, state: CreditState) -> CreditState:
@@ -514,5 +531,415 @@ Provide your analysis as JSON."""
             "write_output", ["credit_decision"], ["events_written"], ms
         )
         return {**state, "output_events": events_written, "next_agent": "fraud_detection"}
+
+    # ------------------------------------------------------------------
+    # Upgraded deterministic credit-scoring phases.
+    # These override the older LangGraph reference implementation above.
+    # ------------------------------------------------------------------
+
+    async def _node_validate_inputs(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        applicant_id = str(state.get("applicant_id") or "").strip()
+        if not applicant_id:
+            raise CreditAnalysisError(field="applicant_id", reason="must be a non-empty string")
+
+        try:
+            loan_amount = float(state.get("loan_amount"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="loan_amount", reason="must be > 0") from exc
+        if loan_amount <= 0:
+            raise CreditAnalysisError(field="loan_amount", reason="must be > 0")
+
+        try:
+            annual_income = float(state.get("annual_income"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="annual_income", reason="must be > 0") from exc
+        if annual_income <= 0:
+            raise CreditAnalysisError(field="annual_income", reason="must be > 0")
+
+        try:
+            loan_term_months = int(state.get("loan_term_months"))
+        except Exception as exc:
+            raise CreditAnalysisError(field="loan_term_months", reason="must be between 12 and 360 inclusive") from exc
+        if not 12 <= loan_term_months <= 360:
+            raise CreditAnalysisError(field="loan_term_months", reason="must be between 12 and 360 inclusive")
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "validate_inputs",
+            ["applicant_id", "loan_amount", "annual_income", "loan_term_months"],
+            ["applicant_id", "loan_amount", "annual_income", "loan_term_months"],
+            ms,
+        )
+        return {
+            **state,
+            "applicant_id": applicant_id,
+            "loan_amount": loan_amount,
+            "annual_income": annual_income,
+            "loan_term_months": loan_term_months,
+        }
+
+    async def _node_load_registry(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        applicant_id = str(state.get("applicant_id") or "").strip()
+        if not applicant_id:
+            raise CreditAnalysisError(field="applicant_id", reason="must be a non-empty string")
+
+        if not hasattr(self.store, "load_all"):
+            if self.registry is None:
+                raise RuntimeError("Applicant registry client is not configured")
+
+            profile_obj = await self.registry.get_company(applicant_id)
+            if profile_obj is None:
+                raise ValueError(f"Applicant '{applicant_id}' not found in registry")
+
+            financial_rows = await self.registry.get_financial_history(applicant_id, years=[2022, 2023, 2024])
+            flag_rows = await self.registry.get_compliance_flags(applicant_id)
+            loan_rows = await self.registry.get_loan_relationships(applicant_id)
+
+            profile: dict = asdict(profile_obj)
+            financials: list[dict] = [asdict(row) for row in financial_rows]
+            flags: list[dict] = [asdict(row) for row in flag_rows]
+            loans: list[dict] = [dict(row) for row in loan_rows]
+
+            ms = int((time.time() - t) * 1000)
+            await self._record_tool_call(
+                "query_applicant_registry",
+                f"company_id={applicant_id} tables=[companies,financial_history,compliance_flags,loan_relationships]",
+                f"Loaded profile, {len(financials)} fiscal years, {len(flags)} flags, {len(loans)} loans",
+                ms,
+            )
+
+            has_defaults = any(l.get("default_occurred") for l in loans)
+            traj = profile.get("trajectory", "UNKNOWN")
+            event = HistoricalProfileConsumed(
+                application_id=state["application_id"],
+                session_id=self.session_id,
+                fiscal_years_loaded=[f["fiscal_year"] for f in financials],
+                has_prior_loans=bool(loans),
+                has_defaults=has_defaults,
+                revenue_trajectory=traj,
+                data_hash=self._sha({"fins": financials, "flags": flags}),
+                consumed_at=datetime.now(),
+            ).to_store_dict()
+            await self._append_with_retry(f"credit-{state['application_id']}", [event])
+
+            await self._record_node_execution(
+                "load_applicant_registry",
+                ["applicant_id"],
+                ["company_profile", "historical_financials", "compliance_flags", "loan_history"],
+                ms,
+            )
+            return {
+                **state,
+                "company_profile": profile,
+                "historical_financials": financials,
+                "compliance_flags": flags,
+                "loan_history": loans,
+            }
+
+        prior_defaults = 0
+        prior_loans = 0
+        oldest_timestamp: datetime | None = None
+
+        async for event in self.store.load_all(from_position=0):
+            payload = dict(event.get("payload") or {})
+            if str(payload.get("applicant_id") or "").strip() != applicant_id:
+                continue
+
+            event_type = str(event.get("event_type") or "")
+            if payload.get("default_occurred") or event_type in {"LoanDefaulted", "LoanDefaultRecorded"}:
+                prior_defaults += 1
+            if event_type in {"ApplicationSubmitted", "LoanApproved", "LoanOriginated", "CreditAnalysisCompleted", "LOAN_APPROVED"} or any(
+                payload.get(key) is not None for key in ("loan_amount", "requested_amount_usd", "approved_amount_usd")
+            ):
+                prior_loans += 1
+
+            timestamp = self._extract_event_timestamp(event)
+            if timestamp is not None and (oldest_timestamp is None or timestamp < oldest_timestamp):
+                oldest_timestamp = timestamp
+
+        history = {
+            "prior_defaults": int(prior_defaults),
+            "prior_loans": int(prior_loans),
+            "account_age_months": int(self._calculate_account_age_months(oldest_timestamp)),
+        }
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "load_applicant_registry",
+            ["applicant_id"],
+            ["prior_defaults", "prior_loans", "account_age_months"],
+            ms,
+        )
+        return {**state, **history, "applicant_registry": history}
+
+    async def _node_load_facts(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        loan_amount = float(state["loan_amount"])
+        annual_income = float(state["annual_income"])
+        loan_term_months = int(state["loan_term_months"])
+        monthly_debt = float(state.get("monthly_debt") or 0.0)
+        annual_rate = float(state.get("annual_rate") or 0.06)
+        if annual_rate > 1:
+            annual_rate = annual_rate / 100.0
+
+        monthly_income = annual_income / 12.0
+        dti_ratio = (monthly_debt / monthly_income) if monthly_income else 0.0
+        loan_to_income_ratio = loan_amount / annual_income
+        monthly_rate = annual_rate / 12.0
+        if monthly_rate == 0:
+            monthly_payment_estimate = loan_amount / loan_term_months
+        else:
+            monthly_payment_estimate = loan_amount * monthly_rate / (1 - (1 + monthly_rate) ** (-loan_term_months))
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "load_extracted_facts",
+            ["loan_amount", "annual_income", "loan_term_months", "monthly_debt", "annual_rate"],
+            ["dti_ratio", "loan_to_income_ratio", "monthly_payment_estimate"],
+            ms,
+        )
+        return {
+            **state,
+            "monthly_debt": monthly_debt,
+            "annual_rate": annual_rate,
+            "dti_ratio": float(dti_ratio),
+            "loan_to_income_ratio": float(loan_to_income_ratio),
+            "monthly_payment_estimate": float(monthly_payment_estimate),
+        }
+
+    async def _node_analyze(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        dti_ratio = float(state.get("dti_ratio") or 0.0)
+        loan_to_income_ratio = float(state.get("loan_to_income_ratio") or 0.0)
+        prior_defaults = int(state.get("prior_defaults") or 0)
+        account_age_months = int(state.get("account_age_months") or 0)
+
+        factor_scores = {
+            "dti": max(0.0, 100.0 - (dti_ratio * 200.0)),
+            "loan_to_income": max(0.0, 100.0 - (loan_to_income_ratio * 20.0)),
+            "prior_defaults": max(0.0, 100.0 - (prior_defaults * 40.0)),
+            "account_age": min(100.0, account_age_months * 2.0),
+        }
+        credit_score = (
+            (factor_scores["dti"] * 0.35)
+            + (factor_scores["loan_to_income"] * 0.25)
+            + (factor_scores["prior_defaults"] * 0.25)
+            + (factor_scores["account_age"] * 0.15)
+        )
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "analyze_credit_risk",
+            ["dti_ratio", "loan_to_income_ratio", "prior_defaults", "account_age_months"],
+            ["credit_score", "factor_scores"],
+            ms,
+        )
+        return {
+            **state,
+            "factor_scores": factor_scores,
+            "credit_score": float(max(0.0, min(100.0, credit_score))),
+        }
+
+    async def _node_policy(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        dti_ratio = float(state.get("dti_ratio") or 0.0)
+        loan_to_income_ratio = float(state.get("loan_to_income_ratio") or 0.0)
+        prior_defaults = int(state.get("prior_defaults") or 0)
+        credit_score = float(state.get("credit_score") or 0.0)
+
+        hard_gate: str | None = None
+        if dti_ratio > 0.55:
+            policy_outcome = "REJECT"
+            hard_gate = "dti_hard_limit"
+        elif loan_to_income_ratio > 10:
+            policy_outcome = "REJECT"
+            hard_gate = "concentration_risk"
+        elif prior_defaults >= 2:
+            policy_outcome = "REJECT"
+            hard_gate = "credit_policy"
+        elif credit_score >= 70:
+            policy_outcome = "APPROVE"
+        elif credit_score >= 45:
+            policy_outcome = "MANUAL_REVIEW"
+        else:
+            policy_outcome = "REJECT"
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "apply_policy_constraints",
+            ["dti_ratio", "loan_to_income_ratio", "prior_defaults", "credit_score"],
+            ["policy_outcome", "hard_gate"],
+            ms,
+        )
+        return {**state, "policy_outcome": policy_outcome, "hard_gate": hard_gate}
+
+    async def _node_explain_decision(self, state: CreditState) -> CreditState:
+        t = time.time()
+        credit_score = float(state.get("credit_score") or 0.0)
+        policy_outcome = str(state.get("policy_outcome") or "REJECT").upper()
+        factor_scores = dict(state.get("factor_scores") or {})
+        hard_gate = state.get("hard_gate")
+        dti_ratio = float(state.get("dti_ratio") or 0.0)
+        loan_to_income_ratio = float(state.get("loan_to_income_ratio") or 0.0)
+        prior_defaults = int(state.get("prior_defaults") or 0)
+
+        explanation = "Automated scorecard decision — manual explanation unavailable"
+        key_factors: list[str] = []
+        confidence = "low"
+
+        if _ollama is not None:
+            try:
+                result = _ollama.ask(
+                    system_prompt=(
+                        "You are a credit analyst writing a regulatory-grade decision explanation. "
+                        "Given this scorecard output, write a 3-4 sentence explanation of why this loan "
+                        "was approved, rejected, or flagged for review. Be specific about which factors "
+                        "drove the outcome. Respond ONLY in valid JSON with no extra text: "
+                        "{\"explanation\": \"string\", \"key_factors\": [\"string\"], "
+                        "\"confidence\": \"low\"|\"medium\"|\"high\"}"
+                    ),
+                    user_message=json.dumps(
+                        {
+                            "credit_score": credit_score,
+                            "policy_outcome": policy_outcome,
+                            "factor_scores": factor_scores,
+                            "hard_gate_triggered": hard_gate or None,
+                            "dti_ratio": dti_ratio,
+                            "loan_to_income_ratio": loan_to_income_ratio,
+                            "prior_defaults": prior_defaults,
+                        }
+                    ),
+                )
+                if result.get("fallback") is True or result.get("parse_error") is True:
+                    explanation = "Automated scorecard decision — manual explanation unavailable"
+                    key_factors = []
+                    confidence = "low"
+                else:
+                    explanation = str(result["explanation"])
+                    key_factors = [str(item) for item in list(result.get("key_factors") or [])]
+                    confidence = str(result["confidence"])
+            except Exception:
+                explanation = "Automated scorecard decision — manual explanation unavailable"
+                key_factors = []
+                confidence = "low"
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "explain_decision",
+            ["credit_score", "policy_outcome", "factor_scores"],
+            ["explanation", "key_factors", "confidence"],
+            ms,
+        )
+        return {**state, "explanation": explanation, "key_factors": key_factors, "confidence": confidence}
+
+    async def _node_write_output(self, state: CreditState) -> CreditState:  # type: ignore[override]
+        t = time.time()
+        app_id = state["application_id"]
+        applicant_id = str(state.get("applicant_id") or "").strip()
+        credit_score = float(state.get("credit_score") or 0.0)
+        policy_outcome = str(state.get("policy_outcome") or "REJECT").upper()
+        hard_gate = state.get("hard_gate")
+        factor_scores = dict(state.get("factor_scores") or {})
+        explanation = str(state.get("explanation") or "Automated scorecard decision — manual explanation unavailable")
+        key_factors = list(state.get("key_factors") or [])
+        confidence = str(state.get("confidence") or "low")
+
+        credit_event = {
+            "event_type": "CREDIT_ANALYSIS_COMPLETED",
+            "payload": {
+                "applicant_id": applicant_id,
+                "credit_score": float(credit_score),
+                "policy_outcome": policy_outcome,
+                "hard_gate": hard_gate,
+                "factor_scores": {
+                    "dti": float(factor_scores.get("dti", 0.0)),
+                    "loan_to_income": float(factor_scores.get("loan_to_income", 0.0)),
+                    "prior_defaults": float(factor_scores.get("prior_defaults", 0.0)),
+                    "account_age": float(factor_scores.get("account_age", 0.0)),
+                },
+                "explanation": explanation,
+                "key_factors": key_factors,
+                "confidence": confidence,
+            },
+        }
+
+        decision_event_type = {
+            "APPROVE": "LOAN_APPROVED",
+            "REJECT": "LOAN_REJECTED",
+            "MANUAL_REVIEW": "MANUAL_REVIEW_REQUIRED",
+        }[policy_outcome]
+        decision_event = {
+            "event_type": decision_event_type,
+            "payload": {
+                "applicant_id": applicant_id,
+                "policy_outcome": policy_outcome,
+                "hard_gate": hard_gate,
+                "credit_score": float(credit_score),
+            },
+        }
+
+        credit_positions = await self._append_with_retry(f"credit-{app_id}", [credit_event])
+        loan_positions = await self._append_with_retry(f"loan-{app_id}", [decision_event])
+
+        events_written = [
+            {
+                "stream_id": f"credit-{app_id}",
+                "event_type": "CREDIT_ANALYSIS_COMPLETED",
+                "stream_position": credit_positions[0] if credit_positions else -1,
+            },
+            {
+                "stream_id": f"loan-{app_id}",
+                "event_type": decision_event_type,
+                "stream_position": loan_positions[0] if loan_positions else -1,
+            },
+        ]
+
+        await self._record_output_written(
+            events_written,
+            f"Credit score {credit_score:.1f} -> {policy_outcome}.",
+        )
+
+        ms = int((time.time() - t) * 1000)
+        await self._record_node_execution(
+            "write_output", ["credit_score", "policy_outcome"], ["events_written"], ms
+        )
+        return {**state, "output_events": events_written, "next_agent": None}
+
+    @staticmethod
+    def _extract_event_timestamp(event: dict[str, Any]) -> datetime | None:
+        payload = dict(event.get("payload") or {})
+        for key in (
+            "submitted_at",
+            "opened_at",
+            "approved_at",
+            "originated_at",
+            "completed_at",
+            "created_at",
+            "recorded_at",
+            "event_time",
+        ):
+            value = payload.get(key) or event.get(key)
+            if isinstance(value, datetime):
+                if value.tzinfo is not None:
+                    return value.astimezone(timezone.utc).replace(tzinfo=None)
+                return value
+            if isinstance(value, str):
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if parsed.tzinfo is not None:
+                        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+                    return parsed
+                except ValueError:
+                    continue
+        return None
+
+    @staticmethod
+    def _calculate_account_age_months(oldest_timestamp: datetime | None) -> int:
+        if oldest_timestamp is None:
+            return 0
+        age_days = max(0, (datetime.now(timezone.utc).replace(tzinfo=None) - oldest_timestamp).days)
+        return int(age_days // 30)
 
 
