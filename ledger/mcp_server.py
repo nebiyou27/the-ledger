@@ -655,7 +655,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         return _json_text(runtime.manual_reviews.all_rows())
 
     @server.resource(
-        "ledger://metrics/event-throughput",
+        "ledger://metrics/event-throughput/{window_minutes}?bucket_minutes={bucket_minutes}",
         name="event_throughput",
         mime_type="application/json",
         description="Event throughput snapshot over the most recent window.",
