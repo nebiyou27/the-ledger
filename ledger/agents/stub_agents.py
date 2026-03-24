@@ -1,4 +1,4 @@
-"""
+﻿"""
 ledger/agents/stub_agents.py
 ============================
 STUB IMPLEMENTATIONS for DocumentProcessingAgent, FraudDetectionAgent,
@@ -27,6 +27,25 @@ from langgraph.graph import StateGraph, END
 
 from ledger.agents.base_agent import BaseApexAgent
 from ledger.agents.extraction_adapter import DatagenExtractionAdapter
+try:
+    import sys as _sys, os as _os
+    _refinery_path = _os.getenv("DOCUMENT_REFINERY_PATH", "")
+    if _refinery_path and _refinery_path not in _sys.path:
+        _sys.path.insert(0, _refinery_path)
+    from src.agents.extractor import run_extraction, ExtractedDocument
+    REFINERY_AVAILABLE = True
+except ImportError:
+    REFINERY_AVAILABLE = False
+    run_extraction = None  # type: ignore[assignment]
+    ExtractedDocument = Any  # type: ignore[assignment]
+try:
+    from ledger.agents.ollama_client import OllamaClient
+except Exception:  # pragma: no cover - optional path guard
+    OllamaClient = None  # type: ignore[assignment]
+try:
+    _ollama = OllamaClient() if OllamaClient is not None else None
+except ImportError:  # pragma: no cover - optional path guard
+    _ollama = None
 from ledger.domain.aggregates.compliance_record import ComplianceRecordAggregate
 from ledger.domain.compliance_rules import REGULATIONS, RULE_SET_VERSION
 from ledger.schema.events import (
@@ -75,15 +94,20 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
-# ─── DOCUMENT PROCESSING AGENT ───────────────────────────────────────────────
+# â”€â”€â”€ DOCUMENT PROCESSING AGENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class DocProcState(TypedDict):
     application_id: str
     session_id: str
     package_id: str | None
+    processing_mode: str | None
     documents: list[dict] | None
     document_ids: list[str] | None
     document_paths: list[str] | None
+    structured_input: dict | None
+    pdf_path: str | None
+    refinery_result: Any | None
+    processed_document: dict | None
     extraction_results: list[dict] | None  # one per document
     quality_assessment: dict | None
     quality_flags: list[str] | None
@@ -98,8 +122,8 @@ class DocumentProcessingAgent(BaseApexAgent):
     Processes uploaded PDFs and appends extraction events.
 
     LangGraph nodes:
-        validate_inputs → validate_document_formats → extract_income_statement →
-        extract_balance_sheet → assess_quality → write_output
+        validate_inputs â†’ validate_document_formats â†’ extract_income_statement â†’
+        extract_balance_sheet â†’ assess_quality â†’ write_output
 
     Output events:
         docpkg-{id}:  DocumentFormatValidated (x per doc), ExtractionStarted (x per doc),
@@ -111,7 +135,7 @@ class DocumentProcessingAgent(BaseApexAgent):
         In _node_extract_document(), call your Week 3 pipeline:
             from document_refinery.pipeline import extract_financial_facts
             facts = await extract_financial_facts(file_path, document_type)
-        Wrap in try/except — append ExtractionFailed if pipeline raises.
+        Wrap in try/except â€” append ExtractionFailed if pipeline raises.
 
     LLM in _node_assess_quality():
         System: "You are a financial document quality analyst.
@@ -122,10 +146,10 @@ class DocumentProcessingAgent(BaseApexAgent):
     WHEN THIS WORKS:
         pytest tests/phase2/test_document_agent.py  # all pass
         python scripts/run_pipeline.py --app APEX-0001 --phase document
-          → ExtractionCompleted event in docpkg stream with non-null total_revenue
-          → QualityAssessmentCompleted event present
-          → PackageReadyForAnalysis event present
-          → CreditAnalysisRequested on loan stream
+          â†’ ExtractionCompleted event in docpkg stream with non-null total_revenue
+          â†’ QualityAssessmentCompleted event present
+          â†’ PackageReadyForAnalysis event present
+          â†’ CreditAnalysisRequested on loan stream
     """
 
     def __init__(self, agent_id: str, agent_type: str, store, registry, llm=None, model="deepseek-r1:8b", client=None, extraction_adapter=None):
@@ -150,49 +174,278 @@ class DocumentProcessingAgent(BaseApexAgent):
         g.add_edge("write_output",              END)
         return g.compile()
 
-    def _initial_state(self, application_id: str) -> DocProcState:
-        return DocProcState(
-            application_id=application_id, session_id=self.session_id, package_id=None, documents=None,
-            document_ids=None, document_paths=None,
-            extraction_results=None, quality_assessment=None,
+    def _initial_state(
+        self,
+        application_id: str,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ) -> DocProcState:
+        state: DocProcState = DocProcState(
+            application_id=application_id,
+            session_id=self.session_id,
+            package_id=None,
+            processing_mode=None,
+            documents=None,
+            document_ids=None,
+            document_paths=None,
+            structured_input=None,
+            pdf_path=None,
+            refinery_result=None,
+            processed_document=None,
+            extraction_results=None,
+            quality_assessment=None,
             quality_flags=None,
-            errors=[], output_events=[], next_agent=None,
+            errors=[],
+            output_events=[],
+            next_agent=None,
         )
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text  # type: ignore[index]
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work  # type: ignore[index]
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id  # type: ignore[index]
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point  # type: ignore[index]
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)  # type: ignore[arg-type]
+        return state
+
+    @staticmethod
+    def _coerce_float(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _append_failure_detail(app_id: str, reason: str, details: str, failed_fields: list[str] | None = None) -> dict[str, Any]:
+        return {
+            "event_type": "DOCUMENT_PROCESSING_FAILED",
+            "event_version": 1,
+            "payload": {
+                "application_id": app_id,
+                "reason": reason,
+                "details": details,
+                "failed_fields": failed_fields or [],
+            },
+        }
+
+    @staticmethod
+    def _normalize_extracted_value(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            return dict(value)
+        if hasattr(value, "model_dump"):
+            return value.model_dump(mode="json")
+        if hasattr(value, "__dict__"):
+            return dict(value.__dict__)
+        return value
+
+    @staticmethod
+    def _row_provenance(row: dict[str, Any]) -> dict[str, Any] | None:
+        provenance = row.get("provenance")
+        if isinstance(provenance, dict):
+            candidate = dict(provenance)
+        else:
+            candidate = {k: row.get(k) for k in ("doc_id", "page_number", "bbox", "content_hash", "strategy_used") if row.get(k) is not None}
+        required = {"doc_id", "page_number", "bbox", "content_hash", "strategy_used"}
+        if not required.issubset(candidate.keys()):
+            return None
+        return {
+            "doc_id": str(candidate["doc_id"]),
+            "page_number": int(candidate["page_number"]),
+            "bbox": list(candidate["bbox"]),
+            "content_hash": str(candidate["content_hash"]),
+            "strategy_used": str(candidate["strategy_used"]),
+        }
+
+    @staticmethod
+    def _row_matches_keywords(row: dict[str, Any], keywords: list[str]) -> bool:
+        haystack = " ".join(
+            str(row.get(key, ""))
+            for key in ("field_name", "fact_name", "label", "key", "name", "description", "text")
+        ).lower()
+        return any(keyword in haystack for keyword in keywords)
+
+    @staticmethod
+    def _row_numeric_value(row: dict[str, Any]) -> float | None:
+        for key in ("numeric_value", "value", "field_value", "fact_value", "amount", "extracted_value"):
+            if key in row:
+                value = row.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+                try:
+                    return float(str(value).replace(",", "").strip())
+                except Exception:
+                    continue
+        if len(row) == 1:
+            only_value = next(iter(row.values()))
+            if isinstance(only_value, (int, float)):
+                return float(only_value)
+            try:
+                return float(str(only_value).replace(",", "").strip())
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _normalize_record(value: Any) -> dict[str, Any]:
+        record = _to_plain_dict(value)
+        if not isinstance(record, dict):
+            return {}
+        return dict(record)
+
+    @staticmethod
+    def _page_confidence(page: Any) -> float:
+        page_dict = _to_plain_dict(page)
+        for key in ("confidence", "page_confidence", "mean_confidence"):
+            if key in page_dict:
+                try:
+                    return float(page_dict[key])
+                except Exception:
+                    continue
+        try:
+            return float(getattr(page, "confidence"))
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _page_strategy(page: Any) -> str | None:
+        page_dict = _to_plain_dict(page)
+        for key in ("strategy_used", "strategy", "extraction_strategy"):
+            if page_dict.get(key):
+                return str(page_dict[key])
+        for attr in ("strategy_used", "strategy", "extraction_strategy"):
+            if getattr(page, attr, None):
+                return str(getattr(page, attr))
+        return None
+
+    @staticmethod
+    def _document_class_from_result(result: Any) -> str:
+        for key in ("document_class", "doc_class", "class_name"):
+            value = getattr(result, key, None)
+            if value:
+                return str(value)
+        if isinstance(result, dict):
+            for key in ("document_class", "doc_class", "class_name"):
+                if result.get(key):
+                    return str(result[key])
+        return "unknown"
+
+    @staticmethod
+    def _strategy_used_from_result(result: Any, pages: list[Any]) -> str:
+        for key in ("strategy_used", "strategy", "routing_strategy"):
+            value = getattr(result, key, None)
+            if value:
+                return str(value)
+        if isinstance(result, dict):
+            for key in ("strategy_used", "strategy", "routing_strategy"):
+                if result.get(key):
+                    return str(result[key])
+        for page in pages:
+            strategy = DocumentProcessingAgent._page_strategy(page)
+            if strategy:
+                return strategy
+        return "unknown"
+
+    @staticmethod
+    def _doc_id_from_result(result: Any, pdf_path: str | None) -> str:
+        for key in ("doc_id", "document_id"):
+            value = getattr(result, key, None)
+            if value:
+                return str(value)
+        if isinstance(result, dict):
+            for key in ("doc_id", "document_id"):
+                if result.get(key):
+                    return str(result[key])
+        if pdf_path:
+            return Path(pdf_path).stem
+        return "unknown"
+
+    @staticmethod
+    def _fact_table_rows(result: Any) -> list[dict[str, Any]]:
+        fact_table = getattr(result, "fact_table", None)
+        if fact_table is None and isinstance(result, dict):
+            fact_table = result.get("fact_table")
+        rows: list[dict[str, Any]] = []
+        if isinstance(fact_table, dict):
+            fact_table = list(fact_table.values())
+        if isinstance(fact_table, list):
+            for row in fact_table:
+                normalized = _to_plain_dict(row)
+                if isinstance(normalized, dict):
+                    rows.append(dict(normalized))
+        return rows
+
+    @staticmethod
+    def _pages_from_result(result: Any) -> list[Any]:
+        pages = getattr(result, "pages", None)
+        if pages is None and isinstance(result, dict):
+            pages = result.get("pages")
+        if not pages:
+            return []
+        return list(pages)
 
     async def _node_validate_inputs(self, state):
         t = time.time()
         app_id = state["application_id"]
         loan_events = await self.store.load_stream(f"loan-{app_id}")
-        uploads = [ev for ev in loan_events if ev.get("event_type") == "DocumentUploaded"]
-        if not uploads:
-            raise ValueError(f"No DocumentUploaded events found for loan-{app_id}")
+        if not loan_events:
+            raise ValueError(f"No events found for loan-{app_id}")
 
         documents: list[dict[str, Any]] = []
-        for ev in uploads:
+        structured_input: dict[str, Any] | None = None
+        pdf_path = None
+        for ev in loan_events:
             payload = ev.get("payload") or {}
-            doc_type = str(payload.get("document_type") or "")
-            documents.append({
-                "document_id": str(payload.get("document_id") or ""),
-                "document_type": doc_type,
-                "file_path": str(payload.get("file_path") or ""),
-                "filename": str(payload.get("filename") or ""),
-                "application_id": app_id,
-            })
+            if not isinstance(payload, dict):
+                continue
+            if "pdf_path" in payload and payload.get("pdf_path"):
+                pdf_path = str(payload.get("pdf_path"))
+                structured_input = dict(payload)
+            if structured_input is None and any(key in payload for key in ("loan_amount", "annual_income", "loan_term_months", "requested_amount_usd")):
+                structured_input = dict(payload)
+            if ev.get("event_type") == "DocumentUploaded":
+                documents.append({
+                    "document_id": str(payload.get("document_id") or ""),
+                    "document_type": str(payload.get("document_type") or ""),
+                    "file_path": str(payload.get("file_path") or ""),
+                    "filename": str(payload.get("filename") or ""),
+                    "application_id": app_id,
+                })
 
-        required = {
-            DocumentType.APPLICATION_PROPOSAL.value,
-            DocumentType.INCOME_STATEMENT.value,
-            DocumentType.BALANCE_SHEET.value,
-        }
-        present = {doc["document_type"] for doc in documents}
-        missing = sorted(required - present)
-        if missing:
-            raise ValueError(f"Missing required documents for document package: {missing}")
+        if pdf_path:
+            mode = "refinery"
+        elif structured_input and not documents:
+            mode = "structured"
+        elif documents:
+            mode = "legacy"
+            if structured_input is None:
+                structured_input = {
+                    "applicant_id": next((str((ev.get("payload") or {}).get("applicant_id") or "") for ev in loan_events if ev.get("event_type") == "ApplicationSubmitted"), ""),
+                    "loan_amount": next((self._coerce_float((ev.get("payload") or {}).get("requested_amount_usd")) for ev in loan_events if ev.get("event_type") == "ApplicationSubmitted"), None),
+                    "loan_term_months": next((int((ev.get("payload") or {}).get("loan_term_months") or 0) or None for ev in loan_events if ev.get("event_type") == "ApplicationSubmitted"), None),
+                }
+        else:
+            raise ValueError(f"No usable document or structured loan input found for loan-{app_id}")
 
         await self._record_node_execution(
             "validate_inputs",
             ["application_id"],
-            ["document_ids", "document_paths", "documents"],
+            ["document_ids", "document_paths", "documents", "structured_input", "pdf_path", "processing_mode"],
             int((time.time() - t) * 1000),
         )
         return {
@@ -201,17 +454,131 @@ class DocumentProcessingAgent(BaseApexAgent):
             "documents": documents,
             "document_ids": [doc["document_id"] for doc in documents],
             "document_paths": [doc["file_path"] for doc in documents],
+            "structured_input": structured_input,
+            "pdf_path": pdf_path,
+            "processing_mode": mode,
         }
 
     async def _node_validate_formats(self, state):
         t = time.time()
         package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
+        mode = state.get("processing_mode") or "legacy"
         docs = list(state.get("documents") or [])
+        written: list[dict[str, Any]] = []
+
+        if mode == "structured":
+            structured = dict(state.get("structured_input") or {})
+            required = ["applicant_id", "loan_amount", "annual_income", "loan_term_months"]
+            failed_fields = [field for field in required if structured.get(field) in (None, "", [])]
+            if failed_fields:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "required_field_not_extracted",
+                    f"Missing required structured loan fields: {', '.join(failed_fields)}",
+                    failed_fields=failed_fields,
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise ValueError(f"Missing required structured loan fields: {failed_fields}")
+
+            await self._record_node_execution(
+                "validate_document_formats",
+                ["structured_input"],
+                ["documents", "structured_input"],
+                int((time.time() - t) * 1000),
+            )
+            return {
+                **state,
+                "structured_input": structured,
+                "processing_mode": mode,
+            }
+
+        if mode == "refinery":
+            pdf_path = str(state.get("pdf_path") or "")
+            if not pdf_path or not (_os.getenv("DOCUMENT_REFINERY_PATH", "") and REFINERY_AVAILABLE and callable(run_extraction)):
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "refinery_unavailable",
+                    "DOCUMENT_REFINERY_PATH is not set or document-refinery could not be imported.",
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise RuntimeError("document-refinery unavailable")
+
+            extraction_config = {
+                "lang": "amh+eng",
+                "psm": 3,
+                "table_density_threshold": 0.3,
+                "high_image_thin_gate": True,
+                "vlm_timeout": 45,
+                "max_vlm_pages": 40,
+                "total_runtime_cap": 900,
+            }
+            try:
+                result: ExtractedDocument = run_extraction(pdf_path, extraction_config)  # type: ignore[misc]
+            except Exception as exc:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "extraction_failed",
+                    str(exc),
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise
+
+            pages = self._pages_from_result(result)
+            if not pages:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "extraction_failed",
+                    "run_extraction returned no pages",
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise ValueError("run_extraction returned no pages")
+
+            confidences = [self._page_confidence(page) for page in pages]
+            mean_confidence = sum(confidences) / max(len(confidences), 1)
+            if mean_confidence < 0.50:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "confidence_too_low",
+                    f"mean_confidence={mean_confidence:.2f}",
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise ValueError(f"mean confidence too low: {mean_confidence:.2f}")
+
+            doc_id = self._doc_id_from_result(result, pdf_path)
+            strategy_used = self._strategy_used_from_result(result, pages)
+            document_class = self._document_class_from_result(result)
+            escalation_count = int(getattr(result, "escalation_count", None) or (result.get("escalation_count") if isinstance(result, dict) else 0) or 0)
+            ingested_event = {
+                "event_type": "DOCUMENT_INGESTED",
+                "event_version": 1,
+                "payload": {
+                    "doc_id": doc_id,
+                    "page_count": len(pages),
+                    "strategy_used": strategy_used,
+                    "extraction_confidence": round(mean_confidence, 4),
+                    "document_class": document_class,
+                    "escalation_count": escalation_count,
+                },
+            }
+            await self._append_with_retry(package_id, [ingested_event])
+            await self._record_node_execution(
+                "validate_document_formats",
+                ["pdf_path"],
+                ["refinery_result"],
+                int((time.time() - t) * 1000),
+            )
+            return {
+                **state,
+                "refinery_result": result,
+                "processing_mode": mode,
+                "pdf_path": pdf_path,
+                "document_ids": [doc_id],
+            }
+
         if not docs:
             raise ValueError("No documents available for format validation")
 
         valid_docs: list[dict[str, Any]] = []
-        written: list[dict[str, Any]] = []
         for doc in docs:
             file_path = Path(doc.get("file_path") or "")
             doc_id = doc.get("document_id") or "unknown"
@@ -267,15 +634,139 @@ class DocumentProcessingAgent(BaseApexAgent):
         }
 
     async def _node_extract_is(self, state):
+        if (state.get("processing_mode") or "legacy") != "legacy":
+            await self._record_node_execution(
+                "extract_income_statement",
+                ["documents"],
+                ["extraction_results"],
+                0,
+            )
+            return state
         t = time.time()
         return await self._extract_document_type(state, DocumentType.INCOME_STATEMENT, "extract_income_statement")
 
     async def _node_extract_bs(self, state):
+        if (state.get("processing_mode") or "legacy") != "legacy":
+            await self._record_node_execution(
+                "extract_balance_sheet",
+                ["documents"],
+                ["extraction_results"],
+                0,
+            )
+            return state
         t = time.time()
         return await self._extract_document_type(state, DocumentType.BALANCE_SHEET, "extract_balance_sheet")
 
     async def _node_assess_quality(self, state):
         t = time.time()
+        mode = state.get("processing_mode") or "legacy"
+        package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
+
+        if mode == "structured":
+            structured = dict(state.get("structured_input") or {})
+            processed_document = {
+                "applicant_id": str(structured.get("applicant_id") or state["application_id"]),
+                "loan_amount": self._coerce_float(structured.get("loan_amount") or structured.get("requested_amount_usd")) or 0.0,
+                "annual_income": self._coerce_float(structured.get("annual_income")) or 0.0,
+                "loan_term_months": int(structured.get("loan_term_months") or 0),
+            }
+            quality_assessment = {
+                "overall_confidence": 1.0,
+                "is_coherent": True,
+                "anomalies": [],
+                "critical_missing_fields": [],
+                "reextraction_recommended": False,
+                "auditor_notes": "Structured loan fields validated successfully.",
+            }
+            await self._record_node_execution(
+                "assess_quality",
+                ["structured_input"],
+                ["quality_assessment", "processed_document"],
+                int((time.time() - t) * 1000),
+            )
+            return {
+                **state,
+                "processed_document": processed_document,
+                "quality_assessment": quality_assessment,
+                "quality_flags": [],
+            }
+
+        if mode == "refinery":
+            result = state.get("refinery_result")
+            pages = self._pages_from_result(result)
+            if not pages:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "extraction_failed",
+                    "refinery_result missing pages",
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise ValueError("refinery_result missing pages")
+
+            rows = self._fact_table_rows(result)
+            field_specs = {
+                "loan_amount": ["loan", "amount", "principal"],
+                "annual_income": ["income", "salary", "earnings"],
+                "loan_term_months": ["term", "months", "duration"],
+            }
+            mapped: dict[str, Any] = {}
+            provenance: dict[str, dict[str, Any]] = {}
+            for field_name, keywords in field_specs.items():
+                for row in rows:
+                    if not self._row_matches_keywords(row, keywords):
+                        continue
+                    value = self._row_numeric_value(row)
+                    prov = self._row_provenance(row)
+                    if value is None or prov is None:
+                        continue
+                    mapped[field_name] = value
+                    provenance[field_name] = prov
+                    break
+
+            failed_fields = [field for field in field_specs if field not in mapped]
+            if failed_fields:
+                failure = self._append_failure_detail(
+                    state["application_id"],
+                    "required_field_not_extracted",
+                    f"Missing mapped fields: {', '.join(failed_fields)}",
+                    failed_fields=failed_fields,
+                )
+                await self._append_with_retry(package_id, [failure])
+                raise ValueError(f"Missing mapped fields: {failed_fields}")
+
+            doc_id = self._doc_id_from_result(result, state.get("pdf_path"))
+            applicant_id = doc_id if doc_id else Path(str(state.get("pdf_path") or "")).stem
+            mean_confidence = sum(self._page_confidence(page) for page in pages) / max(len(pages), 1)
+            quality_assessment = {
+                "overall_confidence": round(mean_confidence, 4),
+                "is_coherent": True,
+                "anomalies": [],
+                "critical_missing_fields": [],
+                "reextraction_recommended": False,
+                "auditor_notes": "Document refinery output mapped successfully.",
+            }
+            processed_document = {
+                "applicant_id": applicant_id,
+                "loan_amount": mapped["loan_amount"],
+                "annual_income": mapped["annual_income"],
+                "loan_term_months": int(mapped["loan_term_months"]),
+                "loan_amount_provenance": provenance["loan_amount"],
+                "annual_income_provenance": provenance["annual_income"],
+                "loan_term_months_provenance": provenance["loan_term_months"],
+            }
+            await self._record_node_execution(
+                "assess_quality",
+                ["refinery_result"],
+                ["quality_assessment", "processed_document"],
+                int((time.time() - t) * 1000),
+            )
+            return {
+                **state,
+                "processed_document": processed_document,
+                "quality_assessment": quality_assessment,
+                "quality_flags": [],
+            }
+
         package_id = state.get("package_id") or f"docpkg-{state['application_id']}"
         extraction_results = list(state.get("extraction_results") or [])
         if not extraction_results:
@@ -388,10 +879,58 @@ class DocumentProcessingAgent(BaseApexAgent):
         t = time.time()
         app_id = state["application_id"]
         package_id = state.get("package_id") or f"docpkg-{app_id}"
+        mode = state.get("processing_mode") or "legacy"
         quality = state.get("quality_assessment") or {}
         documents_processed = len(state.get("documents") or [])
+        if mode in {"structured", "refinery"}:
+            processed_document = dict(state.get("processed_document") or {})
+            if not processed_document and state.get("structured_input"):
+                structured = dict(state.get("structured_input") or {})
+                processed_document = {
+                    "applicant_id": str(structured.get("applicant_id") or app_id),
+                    "loan_amount": self._coerce_float(structured.get("loan_amount") or structured.get("requested_amount_usd")) or 0.0,
+                    "annual_income": self._coerce_float(structured.get("annual_income")) or 0.0,
+                    "loan_term_months": int(structured.get("loan_term_months") or 0),
+                }
+
+            processed_event = {
+                "event_type": "DOCUMENT_PROCESSED",
+                "event_version": 1,
+                "payload": processed_document,
+            }
+            events_to_write = [processed_event]
+            positions = await self._append_with_retry(f"docpkg-{app_id}", events_to_write)
+            events_written = [
+                {"stream_id": f"docpkg-{app_id}", "event_type": "DOCUMENT_PROCESSED", "stream_position": positions[0] if positions else -1},
+            ]
+            await self._record_output_written(events_written, "Document processed successfully.")
+            await self._record_node_execution(
+                "write_output",
+                ["quality_assessment", "processed_document"],
+                ["events_written"],
+                int((time.time() - t) * 1000),
+            )
+            return {**state, "output_events": events_written, "next_agent": "credit_analysis"}
+
         has_quality_flags = bool((quality.get("critical_missing_fields") or []) or (quality.get("anomalies") or []) or quality.get("reextraction_recommended"))
         quality_flag_count = len(quality.get("critical_missing_fields") or []) + len(quality.get("anomalies") or [])
+
+        processed_document = state.get("processed_document")
+        if not processed_document and state.get("structured_input"):
+            structured = dict(state.get("structured_input") or {})
+            processed_document = {
+                "applicant_id": str(structured.get("applicant_id") or app_id),
+                "loan_amount": self._coerce_float(structured.get("loan_amount") or structured.get("requested_amount_usd")) or 0.0,
+                "annual_income": self._coerce_float(structured.get("annual_income")) or (self._coerce_float((state.get("extraction_results") or [{}])[0].get("facts", {}).get("total_revenue")) if state.get("extraction_results") else 0.0),
+                "loan_term_months": int(structured.get("loan_term_months") or 0),
+            }
+        if processed_document:
+            processed_event = {
+                "event_type": "DOCUMENT_PROCESSED",
+                "event_version": 1,
+                "payload": processed_document,
+            }
+            await self._append_with_retry(f"docpkg-{app_id}", [processed_event])
 
         package_event = PackageReadyForAnalysis(
             package_id=package_id,
@@ -421,7 +960,7 @@ class DocumentProcessingAgent(BaseApexAgent):
         )
         await self._record_node_execution(
             "write_output",
-            ["quality_assessment"],
+            ["quality_assessment", "processed_document"],
             ["events_written"],
             int((time.time() - t) * 1000),
         )
@@ -493,18 +1032,22 @@ class DocumentProcessingAgent(BaseApexAgent):
         return {**state, "extraction_results": (state.get("extraction_results") or []) + [extraction_result]}
 
 
-# ─── FRAUD DETECTION AGENT ───────────────────────────────────────────────────
+# â”€â”€â”€ FRAUD DETECTION AGENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FraudState(TypedDict):
     application_id: str
     session_id: str
     applicant_id: str | None
+    loan_amount_usd: float | None
+    annual_income: float | None
     extracted_facts: dict | None
     registry_profile: dict | None
     historical_financials: list[dict] | None
     loan_history: list[dict] | None
     document_events: list[dict] | None
     fraud_signals: list[dict] | None
+    rule_findings: dict | None
+    ollama_assessment: dict | None
     fraud_score: float | None
     risk_level: str | None
     recommendation: str | None
@@ -520,8 +1063,8 @@ class FraudDetectionAgent(BaseApexAgent):
     Detects anomalous discrepancies that suggest fraud or document manipulation.
 
     LangGraph nodes:
-        validate_inputs → load_document_facts → cross_reference_registry →
-        analyze_fraud_patterns → write_output
+        validate_inputs â†’ load_document_facts â†’ cross_reference_registry â†’
+        analyze_fraud_patterns â†’ write_output
 
     Output events:
         fraud-{id}: FraudScreeningInitiated, FraudAnomalyDetected (0..N),
@@ -539,9 +1082,9 @@ class FraudDetectionAgent(BaseApexAgent):
             if gap > 0.40 and trajectory not in (GROWTH, RECOVERING): += 0.25
 
         FraudAnomalyDetected is appended for each anomaly where severity >= MEDIUM.
-        fraud_score > 0.60 → recommendation = "DECLINE"
-        fraud_score 0.30..0.60 → "FLAG_FOR_REVIEW"
-        fraud_score < 0.30 → "PROCEED"
+        fraud_score > 0.60 â†’ recommendation = "DECLINE"
+        fraud_score 0.30..0.60 â†’ "FLAG_FOR_REVIEW"
+        fraud_score < 0.30 â†’ "PROCEED"
 
     LLM in _node_analyze():
         System: "You are a financial fraud analyst.
@@ -551,10 +1094,10 @@ class FraudDetectionAgent(BaseApexAgent):
 
     WHEN THIS WORKS:
         pytest tests/phase2/test_fraud_agent.py
-          → FraudScreeningCompleted event in fraud stream
-          → fraud_score between 0.0 and 1.0
-          → ComplianceCheckRequested on loan stream
-          → NARR-03 (crash recovery) test passes
+          â†’ FraudScreeningCompleted event in fraud stream
+          â†’ fraud_score between 0.0 and 1.0
+          â†’ ComplianceCheckRequested on loan stream
+          â†’ NARR-03 (crash recovery) test passes
     """
 
     def build_graph(self):
@@ -573,14 +1116,185 @@ class FraudDetectionAgent(BaseApexAgent):
         g.add_edge("write_output",             END)
         return g.compile()
 
-    def _initial_state(self, application_id: str) -> FraudState:
-        return FraudState(
+    def _initial_state(
+        self,
+        application_id: str,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ) -> FraudState:
+        state: FraudState = FraudState(
             application_id=application_id, session_id=self.session_id, applicant_id=None,
+            loan_amount_usd=None, annual_income=None,
             extracted_facts=None, registry_profile=None, historical_financials=None,
             loan_history=None, document_events=None, fraud_signals=None, fraud_score=None,
+            rule_findings=None, ollama_assessment=None,
             risk_level=None, recommendation=None, anomalies=None,
             errors=[], output_events=[], next_agent=None,
         )
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text  # type: ignore[index]
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work  # type: ignore[index]
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id  # type: ignore[index]
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point  # type: ignore[index]
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)  # type: ignore[arg-type]
+        return state
+
+    @staticmethod
+    def _coerce_float(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _is_malformed_applicant_id(applicant_id: str | None) -> bool:
+        if not applicant_id:
+            return True
+        return re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", str(applicant_id)) is None
+
+    def _build_rule_findings(self, state) -> dict[str, Any]:
+        facts = state.get("extracted_facts") or {}
+        profile = state.get("registry_profile") or {}
+        history = state.get("historical_financials") or []
+        loans = state.get("loan_history") or []
+        applicant_id = state.get("applicant_id")
+
+        loan_amount = self._coerce_float(
+            state.get("loan_amount_usd")
+            or facts.get("requested_amount_usd")
+            or profile.get("requested_amount_usd")
+        )
+        annual_income = self._coerce_float(
+            facts.get("annual_income")
+            or facts.get("total_revenue")
+            or (history[-1].get("total_revenue") if history else None)
+        )
+        dti_ratio = self._coerce_float(
+            facts.get("dti_ratio")
+            or facts.get("debt_to_income_ratio")
+            or profile.get("dti_ratio")
+        )
+        prior_defaults = sum(1 for loan in loans if bool((loan or {}).get("default_occurred")))
+
+        flags: list[str] = []
+        if self._is_malformed_applicant_id(applicant_id):
+            flags.append("missing_identity_fields")
+
+        if loan_amount is None or loan_amount <= 0 or annual_income is None or annual_income <= 0:
+            flags.append("implausible_values")
+        elif loan_amount > 5 * annual_income:
+            flags.append("income_loan_ratio_anomaly")
+
+        if dti_ratio is not None and dti_ratio > 0.55:
+            flags.append("dti_anomaly")
+
+        if prior_defaults >= 2:
+            flags.append("prior_default_history")
+
+        return {
+            "flags": flags,
+            "risk_signals": {
+                "loan_amount": loan_amount,
+                "annual_income": annual_income,
+                "dti_ratio": dti_ratio,
+                "prior_defaults": prior_defaults,
+                "applicant_id": applicant_id,
+            },
+            "flag_count": len(flags),
+        }
+
+    def _score_with_ollama(self, findings: dict[str, Any]) -> dict[str, Any]:
+        fallback_reasoning = "Automated rule-based check only - Ollama unavailable"
+        if OllamaClient is None:
+            return {
+                "score": 0,
+                "confidence": "low",
+                "reasoning": fallback_reasoning,
+                "fallback": True,
+            }
+
+        try:
+            client = OllamaClient()
+            response = client.ask(
+                (
+                    "You are a fraud risk analyst for a commercial lending platform. "
+                    "Given these rule-based findings from a loan application, assign a fraud risk "
+                    "score from 0 to 100 and explain your reasoning. A score above 70 means high "
+                    "fraud risk. Respond ONLY in valid JSON with no extra text: "
+                    '{"score": int, "confidence": "low"|"medium"|"high", "reasoning": "string"}'
+                ),
+                json.dumps(findings, default=str),
+            )
+        except Exception as exc:
+            return {
+                "score": 0,
+                "confidence": "low",
+                "reasoning": fallback_reasoning,
+                "fallback": True,
+                "error": str(exc),
+            }
+
+        if not isinstance(response, dict):
+            return {
+                "score": 0,
+                "confidence": "low",
+                "reasoning": fallback_reasoning,
+                "fallback": True,
+            }
+
+        if response.get("fallback"):
+            return {
+                "score": 0,
+                "confidence": "low",
+                "reasoning": fallback_reasoning,
+                "fallback": True,
+            }
+
+        if response.get("parse_error"):
+            return {
+                "score": 0,
+                "confidence": "low",
+                "reasoning": str(response.get("raw") or fallback_reasoning),
+                "fallback": False,
+            }
+
+        try:
+            score = int(response.get("score", 0))
+        except Exception:
+            score = 0
+        confidence = str(response.get("confidence") or "low").lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        reasoning = str(response.get("reasoning") or "")
+        return {
+            "score": score,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "fallback": False,
+        }
+
+    @staticmethod
+    def _derive_risk_level(score: int, flag_count: int) -> str:
+        if score > 70 or flag_count >= 2:
+            return "HIGH"
+        if score >= 40 or flag_count == 1:
+            return "MEDIUM"
+        return "LOW"
 
     async def _node_validate_inputs(self, state):
         t = time.time()
@@ -590,10 +1304,12 @@ class FraudDetectionAgent(BaseApexAgent):
             raise ValueError(f"No events found for loan-{app_id}")
 
         applicant_id = None
+        loan_amount_usd = None
         fraud_requested = False
         for ev in loan_events:
             if ev["event_type"] == "ApplicationSubmitted":
                 applicant_id = ev["payload"].get("applicant_id")
+                loan_amount_usd = self._coerce_float(ev["payload"].get("requested_amount_usd"))
             elif ev["event_type"] == "FraudScreeningRequested":
                 fraud_requested = True
 
@@ -617,7 +1333,7 @@ class FraudDetectionAgent(BaseApexAgent):
             ["applicant_id", "fraud_screening_initiated"],
             int((time.time() - t) * 1000),
         )
-        return {**state, "applicant_id": applicant_id}
+        return {**state, "applicant_id": applicant_id, "loan_amount_usd": loan_amount_usd}
 
     async def _node_load_facts(self, state):
         t = time.time()
@@ -719,153 +1435,77 @@ class FraudDetectionAgent(BaseApexAgent):
 
     async def _node_analyze(self, state):
         t = time.time()
-        facts = state.get("extracted_facts") or {}
-        profile = state.get("registry_profile") or {}
-        history = state.get("historical_financials") or []
-        loans = state.get("loan_history") or []
-        signals = list(state.get("fraud_signals") or [])
-        anomalies: list[dict] = []
-        score = 0.05
+        findings = self._build_rule_findings(state)
+        ollama_result = self._score_with_ollama(findings)
+        score = int(ollama_result.get("score") or 0)
+        confidence = str(ollama_result.get("confidence") or "low").lower()
+        if confidence not in {"low", "medium", "high"}:
+            confidence = "low"
+        reasoning = str(ollama_result.get("reasoning") or "")
 
-        def _as_float(value):
-            if value is None:
-                return None
-            if isinstance(value, (int, float)):
-                return float(value)
-            try:
-                return float(value)
-            except Exception:
-                return None
+        flags = list(findings.get("flags") or [])
+        risk_signals = dict(findings.get("risk_signals") or {})
+        flag_count = int(findings.get("flag_count") or 0)
 
-        def _add_anomaly(anomaly_type, description, severity, evidence, affected_fields):
-            anomalies.append({
-                "anomaly_type": anomaly_type,
-                "description": description,
-                "severity": severity,
-                "evidence": evidence,
-                "affected_fields": affected_fields,
-            })
-
-        current_revenue = _as_float(facts.get("total_revenue"))
-        if history and current_revenue is not None:
-            prior = _as_float(history[-1].get("total_revenue"))
-            if prior and prior > 0:
-                gap = abs(current_revenue - prior) / prior
-                trajectory = str(profile.get("trajectory") or "").upper()
-                if gap > 0.40 and trajectory not in {"GROWTH", "RECOVERING"}:
-                    severity = "HIGH" if gap > 0.75 else "MEDIUM"
-                    score += 0.25 if severity == "MEDIUM" else 0.35
-                    _add_anomaly(
-                        "revenue_discrepancy",
-                        "Documented revenue diverges materially from registry history.",
-                        severity,
-                        f"Current revenue {current_revenue:,.0f} vs prior year {prior:,.0f} ({gap:.0%} gap).",
-                        ["total_revenue", "trajectory"],
-                    )
-
-        assets = _as_float(facts.get("total_assets"))
-        liabilities = _as_float(facts.get("total_liabilities"))
-        equity = _as_float(facts.get("total_equity"))
-        if assets is not None and liabilities is not None and equity is not None:
-            expected = liabilities + equity
-            denom = max(abs(expected), 1.0)
-            discrepancy = abs(assets - expected) / denom
-            if discrepancy > 0.05:
-                severity = "HIGH" if discrepancy > 0.15 else "MEDIUM"
-                score += 0.2 if severity == "MEDIUM" else 0.3
-                _add_anomaly(
-                    "balance_sheet_inconsistency",
-                    "Balance sheet totals do not reconcile within tolerance.",
-                    severity,
-                    f"Assets {assets:,.0f} vs liabilities+equity {expected:,.0f} ({discrepancy:.0%} gap).",
-                    ["total_assets", "total_liabilities", "total_equity"],
-                )
-        elif assets is None or liabilities is None or equity is None:
-            missing = [name for name, value in (
-                ("total_assets", assets),
-                ("total_liabilities", liabilities),
-                ("total_equity", equity),
-            ) if value is None]
-            if missing:
-                score += 0.1
-                signals.append(f"missing_balance_fields:{','.join(missing)}")
-
-        submission_channel = str(profile.get("submission_channel") or "").lower()
-        ip_region = str(profile.get("ip_region") or "")
-        if submission_channel in {"agent", "branch"}:
-            score += 0.1
-            _add_anomaly(
-                "unusual_submission_pattern",
-                "Submission channel is less typical for this risk profile.",
-                "MEDIUM",
-                f"Submission channel '{submission_channel}' is not typical for automated self-serve screening.",
-                ["submission_channel"],
+        anomalies: list[dict[str, Any]] = []
+        anomaly_descriptions = {
+            "missing_identity_fields": (
+                "Applicant identifier is missing or malformed.",
+                ["applicant_id"],
+            ),
+            "implausible_values": (
+                "Loan amount or annual income is non-positive.",
+                ["loan_amount_usd", "annual_income"],
+            ),
+            "income_loan_ratio_anomaly": (
+                "Requested loan exceeds five times annual income.",
+                ["loan_amount_usd", "annual_income"],
+            ),
+            "dti_anomaly": (
+                "Debt-to-income ratio exceeds the allowed threshold.",
+                ["dti_ratio"],
+            ),
+            "prior_default_history": (
+                "Two or more prior defaults were found in registry history.",
+                ["loan_history"],
+            ),
+        }
+        for flag in flags:
+            description, fields = anomaly_descriptions.get(
+                flag,
+                (f"Rule flag raised: {flag}", []),
             )
-        if ip_region and not ip_region.startswith("US"):
-            score += 0.15
-            _add_anomaly(
-                "unusual_submission_pattern",
-                "Submission originated from an unusual IP region.",
-                "MEDIUM",
-                f"IP region '{ip_region}' is outside the US region set.",
-                ["ip_region"],
+            anomalies.append(
+                {
+                    "anomaly_type": flag,
+                    "description": description,
+                    "severity": "HIGH" if flag in {"implausible_values", "income_loan_ratio_anomaly", "prior_default_history"} else "MEDIUM",
+                    "evidence": json.dumps(risk_signals, default=str),
+                    "affected_fields": fields,
+                }
             )
 
-        if any(l.get("default_occurred") for l in loans):
-            score += 0.15
-            _add_anomaly(
-                "identity_mismatch",
-                "Prior loan default increases the chance of manipulated disclosures.",
-                "MEDIUM",
-                "Registry shows at least one prior default.",
-                ["loan_relationships"],
-            )
-
-        if signals:
-            score += 0.05
-
-        score = max(0.0, min(score, 1.0))
-        recommendation = "PROCEED" if score < 0.30 else "FLAG_FOR_REVIEW" if score < 0.60 else "DECLINE"
-        risk_level = "LOW" if score < 0.20 else "MEDIUM" if score < 0.50 else "HIGH"
-        if score > 0.30 and not anomalies:
-            score = min(score + 0.15, 1.0)
-            recommendation = "FLAG_FOR_REVIEW" if score < 0.60 else "DECLINE"
-            risk_level = "MEDIUM" if score < 0.50 else "HIGH"
-            _add_anomaly(
-                "document_alteration_suspected",
-                "Overall fraud score indicates manual review is warranted.",
-                "MEDIUM",
-                "Composite score crossed the review threshold without a single dominant driver.",
-                ["composite_score"],
-            )
-
-        anomaly_events = []
-        for anomaly in anomalies:
-            if anomaly["severity"] in {"MEDIUM", "HIGH"}:
-                event = FraudAnomalyDetected(
-                    application_id=state["application_id"],
-                    session_id=state["session_id"],
-                    anomaly=anomaly,
-                    detected_at=datetime.utcnow(),
-                ).to_store_dict()
-                anomaly_events.append(event)
-
-        if anomaly_events:
-            await self._append_with_retry(f"fraud-{state['application_id']}", anomaly_events)
+        fraud_flag_raised = score > 70 or flag_count >= 2
+        event_name = "FRAUD_FLAG_RAISED" if fraud_flag_raised else "FRAUD_CHECK_PASSED"
+        risk_level = self._derive_risk_level(score, flag_count)
+        recommendation = "DECLINE" if fraud_flag_raised else ("FLAG_FOR_REVIEW" if risk_level == "MEDIUM" else "PROCEED")
 
         await self._record_node_execution(
             "analyze_fraud_patterns",
             ["extracted_facts", "registry_profile", "historical_financials", "loan_history"],
-            ["fraud_score", "anomalies"],
+            ["fraud_score", "anomalies", "rule_findings", "ollama_assessment"],
             int((time.time() - t) * 1000),
         )
         return {
             **state,
-            "fraud_score": round(score, 4),
+            "fraud_score": round(score / 100.0, 4),
             "risk_level": risk_level,
             "recommendation": recommendation,
             "anomalies": anomalies,
-            "fraud_signals": signals,
+            "fraud_signals": flags,
+            "rule_findings": findings,
+            "ollama_assessment": ollama_result,
+            "output_events": list(state.get("output_events") or []) + [{"event_type": event_name}],
         }
 
     async def _node_write_output(self, state):
@@ -873,20 +1513,66 @@ class FraudDetectionAgent(BaseApexAgent):
         app_id = state["application_id"]
         fraud_stream = f"fraud-{app_id}"
         loan_stream = f"loan-{app_id}"
-        fraud_score = float(state.get("fraud_score") or 0.0)
-        anomalies = state.get("anomalies") or []
-        risk_level = state.get("risk_level") or ("LOW" if fraud_score < 0.20 else "MEDIUM" if fraud_score < 0.50 else "HIGH")
-        recommendation = state.get("recommendation") or ("PROCEED" if fraud_score < 0.30 else "FLAG_FOR_REVIEW" if fraud_score < 0.60 else "DECLINE")
+        rule_findings = state.get("rule_findings") or {}
+        ollama_assessment = state.get("ollama_assessment") or {}
+        flags = list(rule_findings.get("flags") or [])
+        risk_signals = dict(rule_findings.get("risk_signals") or {})
+        flag_count = int(rule_findings.get("flag_count") or len(flags))
+        ollama_score = int(ollama_assessment.get("score") or 0)
+        confidence = str(ollama_assessment.get("confidence") or "low").lower()
+        reasoning = str(ollama_assessment.get("reasoning") or "")
+        fraud_flag_raised = ollama_score > 70 or flag_count >= 2
+        event_name = "FRAUD_FLAG_RAISED" if fraud_flag_raised else "FRAUD_CHECK_PASSED"
+        risk_level = state.get("risk_level") or self._derive_risk_level(ollama_score, flag_count)
+        recommendation = state.get("recommendation") or ("DECLINE" if fraud_flag_raised else ("FLAG_FOR_REVIEW" if risk_level == "MEDIUM" else "PROCEED"))
 
+        result_event = {
+            "event_type": event_name,
+            "event_version": 1,
+            "payload": {
+                "application_id": app_id,
+                "session_id": state["session_id"],
+                "flags": flags,
+                "flag_count": flag_count,
+                "risk_signals": risk_signals,
+                "ollama_score": ollama_score,
+                "confidence": confidence,
+                "reasoning": reasoning,
+            },
+        }
+        completion_event = {
+            "event_type": "FRAUD_CHECK_COMPLETED",
+            "event_version": 1,
+            "payload": {
+                "application_id": app_id,
+                "session_id": state["session_id"],
+                "flags": flags,
+                "flag_count": flag_count,
+                "risk_signals": risk_signals,
+                "ollama_score": ollama_score,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "risk_level": risk_level,
+                "recommendation": recommendation,
+            },
+        }
         completed = FraudScreeningCompleted(
             application_id=app_id,
             session_id=state["session_id"],
-            fraud_score=fraud_score,
+            fraud_score=round(max(0, min(ollama_score, 100)) / 100.0, 4),
             risk_level=risk_level,
-            anomalies_found=len(anomalies),
+            anomalies_found=flag_count,
             recommendation=recommendation,
             screening_model_version=self.model,
-            input_data_hash=self._sha({"facts": state.get("extracted_facts"), "profile": state.get("registry_profile"), "score": fraud_score}),
+            input_data_hash=self._sha(
+                {
+                    "flags": flags,
+                    "risk_signals": risk_signals,
+                    "ollama_score": ollama_score,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                }
+            ),
             completed_at=datetime.utcnow(),
         ).to_store_dict()
 
@@ -898,27 +1584,29 @@ class FraudDetectionAgent(BaseApexAgent):
             rules_to_evaluate=list(REGULATIONS.keys()),
         ).to_store_dict()
 
-        fraud_positions = await self._append_with_retry(fraud_stream, [completed])
+        fraud_positions = await self._append_with_retry(fraud_stream, [result_event, completion_event, completed])
         loan_positions = await self._append_with_retry(loan_stream, [compliance_request])
 
         events_written = [
-            {"stream_id": fraud_stream, "event_type": "FraudScreeningCompleted", "stream_position": fraud_positions[0] if fraud_positions else -1},
+            {"stream_id": fraud_stream, "event_type": event_name, "stream_position": fraud_positions[0] if fraud_positions else -1},
+            {"stream_id": fraud_stream, "event_type": "FRAUD_CHECK_COMPLETED", "stream_position": fraud_positions[1] if len(fraud_positions) > 1 else -1},
+            {"stream_id": fraud_stream, "event_type": "FraudScreeningCompleted", "stream_position": fraud_positions[2] if len(fraud_positions) > 2 else -1},
             {"stream_id": loan_stream, "event_type": "ComplianceCheckRequested", "stream_position": loan_positions[0] if loan_positions else -1},
         ]
         await self._record_output_written(
             events_written,
-            f"Fraud: {risk_level} risk, score {fraud_score:.2f}, recommendation {recommendation}. Compliance check triggered.",
+            f"Fraud: {risk_level} risk, score {ollama_score / 100.0:.2f}, recommendation {recommendation}. Compliance check triggered.",
         )
         await self._record_node_execution(
             "write_output",
-            ["fraud_score", "anomalies"],
+            ["fraud_score", "anomalies", "rule_findings", "ollama_assessment"],
             ["events_written"],
             int((time.time() - t) * 1000),
         )
         return {**state, "output_events": events_written, "next_agent": "compliance", "next_agent_triggered": "compliance"}
 
 
-# ─── COMPLIANCE AGENT ─────────────────────────────────────────────────────────
+# â”€â”€â”€ COMPLIANCE AGENT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ComplianceState(TypedDict):
     application_id: str
@@ -939,11 +1627,11 @@ class ComplianceAgent(BaseApexAgent):
     """
     Evaluates 6 deterministic regulatory rules in sequence.
     Stops at first hard block (is_hard_block=True).
-    LLM not used in rule evaluation — only for human-readable evidence summaries.
+    LLM not used in rule evaluation â€” only for human-readable evidence summaries.
 
     LangGraph nodes:
-        validate_inputs → load_company_profile → evaluate_reg001 → evaluate_reg002 →
-        evaluate_reg003 → evaluate_reg004 → evaluate_reg005 → evaluate_reg006 → write_output
+        validate_inputs â†’ load_company_profile â†’ evaluate_reg001 â†’ evaluate_reg002 â†’
+        evaluate_reg003 â†’ evaluate_reg004 â†’ evaluate_reg005 â†’ evaluate_reg006 â†’ write_output
 
     Note: Use conditional edges after each rule so hard blocks skip remaining rules.
     See add_conditional_edges() in LangGraph docs.
@@ -972,8 +1660,8 @@ class ComplianceAgent(BaseApexAgent):
 
     WHEN THIS WORKS:
         pytest tests/phase2/test_compliance_agent.py
-          → ComplianceCheckCompleted with correct verdict
-          → NARR-04 (Montana REG-003 hard block): no DecisionRequested event,
+          â†’ ComplianceCheckCompleted with correct verdict
+          â†’ NARR-04 (Montana REG-003 hard block): no DecisionRequested event,
             ApplicationDeclined present, adverse_action_notice_required=True
     """
 
@@ -1222,335 +1910,566 @@ class ComplianceAgent(BaseApexAgent):
         return {**state, "output_events": state.get("output_events", []) + [completion_ev], "next_agent": next_agent}
 
 
-# ─── DECISION ORCHESTRATOR ────────────────────────────────────────────────────
+# â”€â”€â”€ DECISION ORCHESTRATOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class OrchestratorState(TypedDict):
     application_id: str
     session_id: str
-    credit_result: dict | None
-    fraud_result: dict | None
-    compliance_result: dict | None
-    contributing_sessions: list[str] | None
-    orchestrator_decision: dict | None
-    recommendation: str | None
-    confidence: float | None
-    approved_amount: float | None
-    executive_summary: str | None
-    conditions: list[str] | None
-    hard_constraints_applied: list[str] | None
+    upstream_events: dict[str, list[dict]]
+    upstream_summary: dict | None
+    ollama_result: dict | None
+    final_decision: str | None
+    final_event_type: str | None
+    confidence: str | None
+    reasoning: str | None
+    safety_rule_applied: str | None
+    missing_upstream_events: list[str]
+    orchestration_failed_reason: str | None
     errors: list[str]
     output_events: list[dict]
     next_agent: str | None
+    next_agent_triggered: str | None
 
 
 class DecisionOrchestratorAgent(BaseApexAgent):
     """
-    Synthesises all prior agent outputs into a final recommendation.
-    The only agent that reads from multiple aggregate streams before deciding.
+    Collects the completed outputs from the upstream agents, sends a structured
+    summary to Ollama, and emits the final loan decision event.
 
-    LangGraph nodes:
-        validate_inputs → load_credit_result → load_fraud_result →
-        load_compliance_result → synthesize_decision → apply_hard_constraints →
-        write_output
-
-    Input streams read (load_* nodes):
-        credit-{id}:     CreditAnalysisCompleted (last event of this type)
-        fraud-{id}:      FraudScreeningCompleted
-        compliance-{id}: ComplianceCheckCompleted
-
-    Output events:
-        loan-{id}:  DecisionGenerated
-                    ApplicationApproved (if APPROVE)
-                    ApplicationDeclined (if DECLINE)
-                    HumanReviewRequested (if REFER)
-
-    HARD CONSTRAINTS (Python, not LLM — applied in apply_hard_constraints node):
-        1. compliance BLOCKED → recommendation = DECLINE (cannot override)
-        2. confidence < 0.60 → recommendation = REFER (triggers HumanReviewRequested)
-        3. fraud_score > 0.60 → recommendation = REFER (triggers HumanReviewRequested)
-        4. risk_tier == HIGH and confidence < 0.70 → recommendation = REFER (triggers HumanReviewRequested)
-
-    LLM in synthesize_decision:
-        System: "You are a senior loan officer synthesising multi-agent analysis.
-                 Produce a recommendation (APPROVE/DECLINE/REFER),
-                 approved_amount_usd, executive_summary (3-5 sentences),
-                 and key_risks list. Return OrchestratorDecision JSON."
-        NOTE: The LLM recommendation may be overridden by apply_hard_constraints.
-              Log this override in DecisionGenerated.policy_overrides_applied.
-
-    WHEN THIS WORKS:
-        pytest tests/phase2/test_orchestrator_agent.py
-          → DecisionGenerated event on loan stream
-          → NARR-05 (human override): DecisionGenerated.recommendation="DECLINE",
-            followed by HumanReviewCompleted.override=True,
-            followed by ApplicationApproved with correct override fields
+    Upstream streams:
+        docpkg-{id}: DOCUMENT_PROCESSED
+        credit-{id}: CREDIT_ANALYSIS_COMPLETED
+        fraud-{id}: FRAUD_CHECK_COMPLETED
+        compliance-{id}: COMPLIANCE_PASSED or COMPLIANCE_FLAG_RAISED
     """
 
     def build_graph(self):
         g = StateGraph(OrchestratorState)
-        g.add_node("validate_inputs",         self._node_validate_inputs)
-        g.add_node("load_credit_result",      self._node_load_credit)
-        g.add_node("load_fraud_result",       self._node_load_fraud)
-        g.add_node("load_compliance_result",  self._node_load_compliance)
-        g.add_node("synthesize_decision",     self._node_synthesize)
-        g.add_node("apply_hard_constraints",  self._node_constraints)
-        g.add_node("write_output",            self._node_write_output)
+        g.add_node("validate_inputs", self._node_validate_inputs)
+        g.add_node("load_credit_result", self._node_load_credit)
+        g.add_node("load_fraud_result", self._node_load_fraud)
+        g.add_node("load_compliance_result", self._node_load_compliance)
+        g.add_node("synthesize_decision", self._node_synthesize)
+        g.add_node("apply_hard_constraints", self._node_constraints)
+        g.add_node("write_output", self._node_write_output)
 
         g.set_entry_point("validate_inputs")
-        g.add_edge("validate_inputs",        "load_credit_result")
-        g.add_edge("load_credit_result",     "load_fraud_result")
-        g.add_edge("load_fraud_result",      "load_compliance_result")
+        g.add_conditional_edges(
+            "validate_inputs",
+            lambda s: "write_output" if s.get("missing_upstream_events") else "load_credit_result",
+        )
+        g.add_edge("load_credit_result", "load_fraud_result")
+        g.add_edge("load_fraud_result", "load_compliance_result")
         g.add_edge("load_compliance_result", "synthesize_decision")
-        g.add_edge("synthesize_decision",    "apply_hard_constraints")
+        g.add_edge("synthesize_decision", "apply_hard_constraints")
         g.add_edge("apply_hard_constraints", "write_output")
-        g.add_edge("write_output",           END)
+        g.add_edge("write_output", END)
         return g.compile()
 
     def _initial_state(self, application_id: str) -> OrchestratorState:
         return OrchestratorState(
-            application_id=application_id, session_id=self.session_id,
-            credit_result=None, fraud_result=None, compliance_result=None,
-            contributing_sessions=None, orchestrator_decision=None, recommendation=None, confidence=None, approved_amount=None,
-            executive_summary=None, conditions=None, hard_constraints_applied=[],
-            errors=[], output_events=[], next_agent=None,
+            application_id=application_id,
+            session_id=self.session_id,
+            upstream_events={},
+            upstream_summary=None,
+            ollama_result=None,
+            final_decision=None,
+            final_event_type=None,
+            confidence=None,
+            reasoning=None,
+            safety_rule_applied=None,
+            missing_upstream_events=[],
+            orchestration_failed_reason=None,
+            errors=[],
+            output_events=[],
+            next_agent=None,
+            next_agent_triggered=None,
         )
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_list(value: Any) -> list:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return list(value)
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]
+
+    @staticmethod
+    def _latest_matching_event(events: list[dict], event_types: list[str]) -> dict | None:
+        wanted = {str(item) for item in event_types}
+        for event in reversed(events or []):
+            if str(event.get("event_type")) in wanted:
+                return dict(event)
+        return None
+
+    @staticmethod
+    def _payload(event: dict | None) -> dict[str, Any]:
+        if not event:
+            return {}
+        return _to_plain_dict(event.get("payload"))
+
+    @staticmethod
+    def _hard_gate_triggered(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        text = str(value).strip().upper()
+        return text not in {"", "NONE", "FALSE", "NO", "0"}
+
+    def _build_upstream_summary(self, state: OrchestratorState) -> dict[str, Any]:
+        document_event = state["upstream_events"].get("document", [])
+        credit_event = state["upstream_events"].get("credit", [])
+        fraud_event = state["upstream_events"].get("fraud", [])
+        compliance_event = state["upstream_events"].get("compliance", [])
+
+        document_completed = self._latest_matching_event(
+            document_event,
+            ["DOCUMENT_PROCESSED", "DocumentProcessed", "ExtractionCompleted"],
+        )
+        credit_completed = self._latest_matching_event(
+            credit_event,
+            ["CREDIT_ANALYSIS_COMPLETED", "CreditAnalysisCompleted"],
+        )
+        fraud_completed = self._latest_matching_event(
+            fraud_event,
+            ["FRAUD_CHECK_COMPLETED", "FRAUD_FLAG_RAISED", "FraudScreeningCompleted"],
+        )
+        compliance_completed = self._latest_matching_event(
+            compliance_event,
+            ["COMPLIANCE_PASSED", "COMPLIANCE_FLAG_RAISED", "ComplianceCheckCompleted"],
+        )
+
+        document_payload = self._payload(document_completed)
+        credit_payload = self._payload(credit_completed)
+        fraud_payload = self._payload(fraud_completed)
+        compliance_payload = self._payload(compliance_completed)
+
+        credit_decision = _to_plain_dict(credit_payload.get("decision"))
+        credit_score = self._coerce_float(
+            credit_payload.get("credit_score")
+            or credit_payload.get("score")
+            or credit_decision.get("credit_score")
+        )
+        if credit_score is None:
+            credit_score = 0.0
+
+        hard_gate = credit_payload.get("hard_gate") or credit_decision.get("hard_gate")
+        factor_scores = _to_plain_dict(
+            credit_payload.get("factor_scores")
+            or credit_decision.get("factor_scores")
+            or {}
+        )
+
+        fraud_flags = self._normalize_list(
+            fraud_payload.get("flags")
+            or fraud_payload.get("fraud_flags")
+            or fraud_payload.get("anomalies")
+        )
+        fraud_score = self._coerce_int(
+            fraud_payload.get("ollama_score")
+            or fraud_payload.get("fraud_risk_score")
+            or fraud_payload.get("score")
+        )
+        if fraud_score is None:
+            fraud_score_float = self._coerce_float(fraud_payload.get("fraud_score"))
+            if fraud_score_float is not None:
+                fraud_score = int(round(fraud_score_float * 100))
+        if fraud_score is None:
+            fraud_score = 0
+        fraud_confidence = str(
+            fraud_payload.get("confidence")
+            or fraud_payload.get("fraud_confidence")
+            or "low"
+        ).lower()
+
+        compliance_outcome = str(
+            compliance_payload.get("compliance_outcome")
+            or compliance_payload.get("overall_verdict")
+            or (compliance_completed or {}).get("event_type")
+            or "UNKNOWN"
+        ).upper()
+        if compliance_outcome in {"CLEAR", "PASSED", "COMPLIANT"}:
+            compliance_outcome = "COMPLIANCE_PASSED"
+        elif compliance_outcome in {"BLOCKED", "FLAGGED", "CONDITIONAL"}:
+            compliance_outcome = "COMPLIANCE_FLAG_RAISED"
+
+        loan_amount = self._coerce_float(
+            document_payload.get("loan_amount")
+            or document_payload.get("requested_amount_usd")
+            or document_payload.get("loan_amount_usd")
+        )
+        annual_income = self._coerce_float(
+            document_payload.get("annual_income")
+            or document_payload.get("total_revenue")
+        )
+        loan_term_months = self._coerce_int(
+            document_payload.get("loan_term_months")
+            or document_payload.get("term_months")
+        )
+
+        applicant_id = str(
+            document_payload.get("applicant_id")
+            or credit_payload.get("applicant_id")
+            or ""
+        )
+
+        return {
+            "application_id": state["application_id"],
+            "applicant_id": applicant_id,
+            "loan_amount": loan_amount,
+            "annual_income": annual_income,
+            "loan_term_months": loan_term_months,
+            "credit_score": credit_score,
+            "credit_policy_outcome": str(
+                credit_payload.get("policy_outcome")
+                or credit_decision.get("policy_outcome")
+                or credit_payload.get("recommendation")
+                or "UNKNOWN"
+            ).upper(),
+            "hard_gate": hard_gate,
+            "fraud_flags": list(fraud_flags),
+            "fraud_risk_score": int(max(0, min(fraud_score, 100))),
+            "fraud_confidence": fraud_confidence,
+            "compliance_outcome": compliance_outcome,
+            "factor_scores": factor_scores,
+        }
 
     async def _node_validate_inputs(self, state):
         t = time.time()
         app_id = state["application_id"]
-        events = await self.store.load_stream(f"loan-{app_id}")
-        if not any(ev["event_type"] == "DecisionRequested" for ev in events):
-            raise ValueError("DecisionRequested event not found in loan stream.")
-        if not any(ev["event_type"] == "CreditAnalysisCompleted" for ev in await self.store.load_stream(f"credit-{app_id}")):
-            raise ValueError("CreditAnalysisCompleted event not found in credit stream.")
-        if not any(ev["event_type"] == "FraudScreeningCompleted" for ev in await self.store.load_stream(f"fraud-{app_id}")):
-            raise ValueError("FraudScreeningCompleted event not found in fraud stream.")
-        if not any(ev["event_type"] == "ComplianceCheckCompleted" for ev in await self.store.load_stream(f"compliance-{app_id}")):
-            raise ValueError("ComplianceCheckCompleted event not found in compliance stream.")
-        await self._record_node_execution("validate_inputs", ["application_id"], ["analysis_ready"], int((time.time() - t) * 1000))
-        return state
+
+        upstream_events = {
+            "document": await self.store.load_stream(f"docpkg-{app_id}"),
+            "credit": await self.store.load_stream(f"credit-{app_id}"),
+            "fraud": await self.store.load_stream(f"fraud-{app_id}"),
+            "compliance": await self.store.load_stream(f"compliance-{app_id}"),
+        }
+        missing: list[str] = []
+        if self._latest_matching_event(upstream_events["document"], ["DOCUMENT_PROCESSED", "DocumentProcessed", "ExtractionCompleted"]) is None:
+            missing.append("DOCUMENT_PROCESSED")
+        if self._latest_matching_event(upstream_events["credit"], ["CREDIT_ANALYSIS_COMPLETED", "CreditAnalysisCompleted"]) is None:
+            missing.append("CREDIT_ANALYSIS_COMPLETED")
+        if self._latest_matching_event(upstream_events["fraud"], ["FRAUD_CHECK_COMPLETED", "FRAUD_FLAG_RAISED", "FraudScreeningCompleted"]) is None:
+            missing.append("FRAUD_CHECK_COMPLETED")
+        if self._latest_matching_event(upstream_events["compliance"], ["COMPLIANCE_PASSED", "COMPLIANCE_FLAG_RAISED", "ComplianceCheckCompleted"]) is None:
+            missing.append("COMPLIANCE_OUTCOME")
+
+        await self._record_tool_call(
+            "load_streams",
+            {
+                "document": f"docpkg-{app_id}",
+                "credit": f"credit-{app_id}",
+                "fraud": f"fraud-{app_id}",
+                "compliance": f"compliance-{app_id}",
+            },
+            {"missing": missing, "upstream_streams": list(upstream_events.keys())},
+            int((time.time() - t) * 1000),
+        )
+        await self._record_node_execution(
+            "validate_inputs",
+            ["application_id"],
+            ["upstream_events", "missing_upstream_events"],
+            int((time.time() - t) * 1000),
+        )
+        return {
+            **state,
+            "upstream_events": upstream_events,
+            "missing_upstream_events": missing,
+            "orchestration_failed_reason": "missing_upstream_output" if missing else None,
+        }
 
     async def _node_load_credit(self, state):
         t = time.time()
-        events = await self.store.load_stream(f"credit-{state['application_id']}")
-        completed = next((ev for ev in reversed(events) if ev["event_type"] == "CreditAnalysisCompleted"), None)
-        if not completed:
-            raise ValueError("CreditAnalysisCompleted not found.")
-        await self._record_tool_call("load_stream", f"credit-{state['application_id']}", "CreditAnalysisCompleted", int((time.time() - t) * 1000))
-        return {**state, "credit_result": completed["payload"]}
+        summary = self._build_upstream_summary(state)
+        await self._record_tool_call(
+            "load_stream",
+            f"credit-{state['application_id']}",
+            {"credit_score": summary["credit_score"], "policy_outcome": summary["credit_policy_outcome"], "hard_gate": summary["hard_gate"]},
+            int((time.time() - t) * 1000),
+        )
+        await self._record_node_execution(
+            "load_credit_result",
+            ["upstream_events"],
+            ["upstream_summary"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "upstream_summary": summary}
 
     async def _node_load_fraud(self, state):
         t = time.time()
-        events = await self.store.load_stream(f"fraud-{state['application_id']}")
-        completed = next((ev for ev in reversed(events) if ev["event_type"] == "FraudScreeningCompleted"), None)
-        if not completed:
-            raise ValueError("FraudScreeningCompleted not found.")
-        await self._record_tool_call("load_stream", f"fraud-{state['application_id']}", "FraudScreeningCompleted", int((time.time() - t) * 1000))
-        return {**state, "fraud_result": completed["payload"]}
+        summary = dict(state.get("upstream_summary") or self._build_upstream_summary(state))
+        await self._record_tool_call(
+            "load_stream",
+            f"fraud-{state['application_id']}",
+            {"fraud_risk_score": summary["fraud_risk_score"], "fraud_confidence": summary["fraud_confidence"], "fraud_flags": summary["fraud_flags"]},
+            int((time.time() - t) * 1000),
+        )
+        await self._record_node_execution(
+            "load_fraud_result",
+            ["upstream_summary"],
+            ["upstream_summary"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "upstream_summary": summary}
 
     async def _node_load_compliance(self, state):
         t = time.time()
-        events = await self.store.load_stream(f"compliance-{state['application_id']}")
-        completed = next((ev for ev in reversed(events) if ev["event_type"] == "ComplianceCheckCompleted"), None)
-        if not completed:
-            raise ValueError("ComplianceCheckCompleted not found.")
-        await self._record_tool_call("load_stream", f"compliance-{state['application_id']}", "ComplianceCheckCompleted", int((time.time() - t) * 1000))
-        contributing_sessions = [
-            f"credit-{state['application_id']}",
-            f"fraud-{state['application_id']}",
+        summary = dict(state.get("upstream_summary") or self._build_upstream_summary(state))
+        await self._record_tool_call(
+            "load_stream",
             f"compliance-{state['application_id']}",
-        ]
-        return {**state, "compliance_result": completed["payload"], "contributing_sessions": contributing_sessions}
+            {"compliance_outcome": summary["compliance_outcome"]},
+            int((time.time() - t) * 1000),
+        )
+        await self._record_node_execution(
+            "load_compliance_result",
+            ["upstream_summary"],
+            ["upstream_summary"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "upstream_summary": summary}
 
     async def _node_synthesize(self, state):
         t = time.time()
-        credit = state.get("credit_result") or {}
-        fraud = state.get("fraud_result") or {}
-        compliance = state.get("compliance_result") or {}
-        credit_decision = credit.get("decision") or {}
-        risk_tier = str(credit_decision.get("risk_tier") or "MEDIUM").upper()
-        confidence = float(credit_decision.get("confidence") or 0.0)
-        fraud_score = float(fraud.get("fraud_score") or 0.0)
-        compliance_verdict = str(compliance.get("overall_verdict") or "CLEAR").upper()
-
-        if compliance_verdict == "BLOCKED":
-            recommendation = "DECLINE"
-        elif fraud_score > 0.60 or confidence < 0.60 or (risk_tier == "HIGH" and confidence < 0.70):
-            recommendation = "REFER"
-        elif risk_tier == "HIGH":
-            recommendation = "DECLINE"
-        else:
-            recommendation = "APPROVE"
-
-        approved_amount = credit_decision.get("recommended_limit_usd")
-        requested_amount = None
-        loan_events = await self.store.load_stream(f"loan-{state['application_id']}")
-        for ev in loan_events:
-            if ev["event_type"] == "ApplicationSubmitted":
-                requested_amount = ev["payload"].get("requested_amount_usd")
-                break
-        if approved_amount is not None and requested_amount is not None:
-            approved_amount = min(float(approved_amount), float(requested_amount))
-
-        key_risks = []
-        if fraud.get("anomalies_found", 0):
-            key_risks.append(f"{fraud.get('anomalies_found')} fraud anomalies detected")
-        if compliance_verdict == "CONDITIONAL":
-            key_risks.append("Compliance completed with conditional findings")
-        if credit_decision.get("key_concerns"):
-            key_risks.extend([str(item) for item in credit_decision.get("key_concerns", [])][:2])
-        if not key_risks:
-            key_risks = ["No major red flags detected"]
-
-        executive_summary = (
-            f"Credit risk is {risk_tier.lower()} with {confidence:.0%} confidence. "
-            f"Fraud score is {fraud_score:.2f} and compliance verdict is {compliance_verdict.lower()}. "
-            f"Preliminary recommendation is {recommendation.lower()}."
+        summary = dict(state.get("upstream_summary") or self._build_upstream_summary(state))
+        system_prompt = (
+            "You are a senior loan underwriting supervisor at Apex Financial Services. "
+            "Given these structured assessments from four specialist agents, recommend a final decision "
+            "for this commercial loan application. Consider all factors together. Respond ONLY in valid "
+            "JSON with no extra text: {\"decision\": \"APPROVE\"|\"REJECT\"|\"MANUAL_REVIEW\", "
+            "\"confidence\": \"low\"|\"medium\"|\"high\", \"reasoning\": \"string (3-4 sentences)\"}"
         )
+        user_message = json.dumps(summary, default=str)
 
-        decision = {
-            "recommendation": recommendation,
-            "confidence": confidence,
-            "approved_amount_usd": approved_amount,
-            "executive_summary": executive_summary,
-            "key_risks": key_risks,
-            "conditions": list(credit_decision.get("conditions", [])),
-            "policy_overrides_applied": list(credit_decision.get("policy_overrides_applied", [])),
-            "model_versions": {
-                "credit": str(credit.get("model_version") or ""),
-                "fraud": str(fraud.get("screening_model_version") or ""),
-                "compliance": str(compliance.get("regulation_set_version") or ""),
-            },
-        }
+        if _ollama is None:
+            ollama_result = {
+                "decision": "MANUAL_REVIEW",
+                "confidence": "low",
+                "reasoning": "Orchestration fallback — Ollama unavailable",
+                "fallback": True,
+            }
+        else:
+            try:
+                response = _ollama.ask(system_prompt=system_prompt, user_message=user_message)
+                if not isinstance(response, dict) or response.get("fallback") or response.get("parse_error"):
+                    ollama_result = {
+                        "decision": "MANUAL_REVIEW",
+                        "confidence": "low",
+                        "reasoning": "Orchestration fallback — Ollama unavailable",
+                        "fallback": True,
+                    }
+                else:
+                    decision = str(response.get("decision") or "MANUAL_REVIEW").upper()
+                    if decision not in {"APPROVE", "REJECT", "MANUAL_REVIEW"}:
+                        decision = "MANUAL_REVIEW"
+                    confidence = str(response.get("confidence") or "low").lower()
+                    if confidence not in {"low", "medium", "high"}:
+                        confidence = "low"
+                    ollama_result = {
+                        "decision": decision,
+                        "confidence": confidence,
+                        "reasoning": str(response.get("reasoning") or ""),
+                        "fallback": False,
+                    }
+            except Exception:
+                ollama_result = {
+                    "decision": "MANUAL_REVIEW",
+                    "confidence": "low",
+                    "reasoning": "Orchestration fallback — Ollama unavailable",
+                    "fallback": True,
+                }
 
-        await self._record_node_execution(
-            "synthesize_decision",
-            ["credit_result", "fraud_result", "compliance_result"],
-            ["orchestrator_decision"],
+        await self._record_tool_call(
+            "ollama.ask",
+            system_prompt,
+            ollama_result,
             int((time.time() - t) * 1000),
         )
-        return {**state, "recommendation": decision["recommendation"], "confidence": decision["confidence"], "approved_amount": decision["approved_amount_usd"], "executive_summary": decision["executive_summary"], "conditions": decision["conditions"], "orchestrator_decision": decision}
+        await self._record_node_execution(
+            "synthesize_decision",
+            ["upstream_summary"],
+            ["ollama_result"],
+            int((time.time() - t) * 1000),
+        )
+        return {**state, "upstream_summary": summary, "ollama_result": ollama_result}
 
     async def _node_constraints(self, state):
         t = time.time()
-        decision = dict(state.get("orchestrator_decision") or {})
-        applied = list(state.get("hard_constraints_applied") or [])
-        credit = state.get("credit_result") or {}
-        fraud = state.get("fraud_result") or {}
-        compliance = state.get("compliance_result") or {}
-        compliance_verdict = str(compliance.get("overall_verdict") or "CLEAR").upper()
-        confidence = float(decision.get("confidence") or 0.0)
-        fraud_score = float(fraud.get("fraud_score") or 0.0)
-        risk_tier = str((credit.get("decision") or {}).get("risk_tier") or "MEDIUM").upper()
+        summary = dict(state.get("upstream_summary") or self._build_upstream_summary(state))
+        ollama_result = dict(state.get("ollama_result") or {})
+        fallback = bool(ollama_result.get("fallback"))
+        ollama_confidence = str(ollama_result.get("confidence") or "low").lower()
+        ollama_decision = str(ollama_result.get("decision") or "MANUAL_REVIEW").upper()
+        reasoning = str(ollama_result.get("reasoning") or "")
 
-        if compliance_verdict == "BLOCKED":
-            if decision.get("recommendation") != "DECLINE":
-                applied.append("COMPLIANCE_BLOCK")
-            decision["recommendation"] = "DECLINE"
-        elif confidence < 0.60:
-            if decision.get("recommendation") != "REFER":
-                applied.append("CONFIDENCE_FLOOR")
-            decision["recommendation"] = "REFER"
-        elif fraud_score > 0.60:
-            if decision.get("recommendation") != "REFER":
-                applied.append("FRAUD_FLOOR")
-            decision["recommendation"] = "REFER"
-        elif risk_tier == "HIGH" and confidence < 0.70:
-            if decision.get("recommendation") != "REFER":
-                applied.append("HIGH_RISK_CONFIDENCE")
-            decision["recommendation"] = "REFER"
+        final_event_type = None
+        final_decision = None
+        safety_rule_applied = None
 
-        decision["policy_overrides_applied"] = list(dict.fromkeys((decision.get("policy_overrides_applied") or []) + applied))
-        if decision["recommendation"] == "REFER":
-            decision["approved_amount_usd"] = None
+        if fallback:
+            final_event_type = "MANUAL_REVIEW_REQUIRED"
+            final_decision = final_event_type
+            safety_rule_applied = "ollama_unavailable"
+            reasoning = "Orchestration fallback — Ollama unavailable"
+            ollama_confidence = "low"
+        elif self._hard_gate_triggered(summary.get("hard_gate")):
+            final_event_type = "LOAN_REJECTED"
+            final_decision = final_event_type
+            safety_rule_applied = "hard_gate"
+        elif int(summary.get("fraud_risk_score") or 0) > 70:
+            final_event_type = "MANUAL_REVIEW_REQUIRED"
+            final_decision = final_event_type
+            safety_rule_applied = "fraud_risk_score_gt_70"
+        elif ollama_confidence == "low":
+            final_event_type = "MANUAL_REVIEW_REQUIRED"
+            final_decision = final_event_type
+            safety_rule_applied = "low_confidence"
+        else:
+            decision_map = {
+                "APPROVE": "LOAN_APPROVED",
+                "REJECT": "LOAN_REJECTED",
+                "MANUAL_REVIEW": "MANUAL_REVIEW_REQUIRED",
+            }
+            final_event_type = decision_map.get(ollama_decision, "MANUAL_REVIEW_REQUIRED")
+            final_decision = final_event_type
 
         await self._record_node_execution(
             "apply_hard_constraints",
-            ["orchestrator_decision"],
-            ["orchestrator_decision"],
+            ["upstream_summary", "ollama_result"],
+            ["final_decision", "final_event_type", "safety_rule_applied"],
             int((time.time() - t) * 1000),
         )
-        return {**state, "orchestrator_decision": decision, "recommendation": decision["recommendation"], "approved_amount": decision.get("approved_amount_usd"), "hard_constraints_applied": decision["policy_overrides_applied"]}
+        return {
+            **state,
+            "upstream_summary": summary,
+            "ollama_result": ollama_result,
+            "final_decision": final_decision,
+            "final_event_type": final_event_type,
+            "confidence": ollama_confidence,
+            "reasoning": reasoning,
+            "safety_rule_applied": safety_rule_applied,
+        }
 
     async def _node_write_output(self, state):
         t = time.time()
         app_id = state["application_id"]
-        decision = state.get("orchestrator_decision") or {}
-        recommendation = str(decision.get("recommendation") or "REFER").upper()
-        confidence = float(decision.get("confidence") or 0.0)
-        approved_amount = decision.get("approved_amount_usd")
-        if approved_amount is not None:
-            approved_amount = float(approved_amount)
-        model_versions = decision.get("model_versions") or {}
-        contributing_sessions = list(state.get("contributing_sessions") or [])
-        if not contributing_sessions:
-            contributing_sessions = [f"credit-{app_id}", f"fraud-{app_id}", f"compliance-{app_id}"]
+        missing = list(state.get("missing_upstream_events") or [])
 
-        decision_event = DecisionGenerated(
-            application_id=app_id,
-            orchestrator_session_id=state["session_id"],
-            recommendation=recommendation,
-            confidence=confidence,
-            approved_amount_usd=approved_amount,
-            conditions=list(decision.get("conditions") or []),
-            executive_summary=str(decision.get("executive_summary") or ""),
-            key_risks=list(decision.get("key_risks") or []),
-            contributing_sessions=contributing_sessions,
-            model_versions={k: str(v) for k, v in model_versions.items()},
-            generated_at=datetime.utcnow(),
-        ).to_store_dict()
+        if missing:
+            failure_event = {
+                "event_type": "ORCHESTRATION_FAILED",
+                "event_version": 1,
+                "payload": {
+                    "application_id": app_id,
+                    "reason": "missing_upstream_output",
+                    "missing_events": missing,
+                },
+            }
+            positions = await self._append_with_retry(f"loan-{app_id}", [failure_event])
+            events_written = [
+                {
+                    "stream_id": f"loan-{app_id}",
+                    "event_type": "ORCHESTRATION_FAILED",
+                    "stream_position": positions[0] if positions else -1,
+                }
+            ]
+            await self._record_output_written(events_written, "Orchestration failed: missing upstream output.")
+            await self._record_node_execution(
+                "write_output",
+                ["missing_upstream_events"],
+                ["events_written"],
+                int((time.time() - t) * 1000),
+            )
+            return {
+                **state,
+                "output_events": events_written,
+                "next_agent": None,
+                "next_agent_triggered": None,
+            }
 
-        events = [decision_event]
-        next_agent = None
-        if recommendation == "APPROVE":
-            compliance_record = await ComplianceRecordAggregate.load(self.store, app_id)
-            if not compliance_record.completed or compliance_record.verdict == "BLOCKED":
-                raise ValueError("ApplicationApproved requires completed non-blocked compliance")
-            events.append(
-                ApplicationApproved(
-                    application_id=app_id,
-                    approved_amount_usd=Decimal(str(approved_amount or 0)),
-                    interest_rate_pct=float((decision.get("interest_rate_pct") or 12.5)),
-                    term_months=int((decision.get("term_months") or 36)),
-                    conditions=list(decision.get("conditions") or []),
-                    approved_by=str(decision.get("approved_by") or "auto"),
-                    effective_date=str(decision.get("effective_date") or datetime.utcnow().date().isoformat()),
-                    approved_at=datetime.utcnow(),
-                ).to_store_dict()
-            )
-        elif recommendation == "DECLINE":
-            events.append(
-                ApplicationDeclined(
-                    application_id=app_id,
-                    decline_reasons=list(decision.get("decline_reasons") or ["Risk policy decline"]),
-                    declined_by=str(decision.get("declined_by") or "decision_orchestrator"),
-                    adverse_action_notice_required=bool(decision.get("adverse_action_notice_required", True)),
-                    adverse_action_codes=list(decision.get("adverse_action_codes") or []),
-                    declined_at=datetime.utcnow(),
-                ).to_store_dict()
-            )
-        else:
-            events.append(
-                HumanReviewRequested(
-                    application_id=app_id,
-                    reason=str(decision.get("review_reason") or "Recommendation REFER or low confidence"),
-                    decision_event_id=self._sha({"application_id": app_id, "session_id": state["session_id"], "recommendation": recommendation}),
-                    assigned_to=decision.get("assigned_to"),
-                    requested_at=datetime.utcnow(),
-                ).to_store_dict()
-            )
-            next_agent = "human_review"
+        summary = dict(state.get("upstream_summary") or self._build_upstream_summary(state))
+        final_event_type = str(state.get("final_event_type") or "MANUAL_REVIEW_REQUIRED")
+        final_decision = str(state.get("final_decision") or final_event_type)
+        confidence = str(state.get("confidence") or "low").lower()
+        reasoning = str(state.get("reasoning") or "")
+        safety_rule_applied = state.get("safety_rule_applied")
 
-        positions = await self._append_with_retry(f"loan-{app_id}", events)
+        orchestration_completed = {
+            "event_type": "ORCHESTRATION_COMPLETED",
+            "event_version": 1,
+            "payload": {
+                "application_id": app_id,
+                "final_decision": final_decision,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "safety_rule_applied": safety_rule_applied,
+                "upstream_summary": summary,
+            },
+        }
+        final_event = {
+            "event_type": final_event_type,
+            "event_version": 1,
+            "payload": {
+                "application_id": app_id,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "safety_rule_applied": safety_rule_applied,
+            },
+        }
+
+        positions = await self._append_with_retry(f"loan-{app_id}", [orchestration_completed, final_event])
         events_written = [
-            {"stream_id": f"loan-{app_id}", "event_type": events[0]["event_type"], "stream_position": positions[0] if positions else -1}
+            {
+                "stream_id": f"loan-{app_id}",
+                "event_type": "ORCHESTRATION_COMPLETED",
+                "stream_position": positions[0] if positions else -1,
+            },
+            {
+                "stream_id": f"loan-{app_id}",
+                "event_type": final_event_type,
+                "stream_position": positions[1] if len(positions) > 1 else -1,
+            },
         ]
-        if len(events) > 1:
-            events_written.append({"stream_id": f"loan-{app_id}", "event_type": events[1]["event_type"], "stream_position": positions[1] if len(positions) > 1 else -1})
-
         await self._record_output_written(
             events_written,
-            f"Decision {recommendation}: confidence {confidence:.0%}, approved_amount {approved_amount}.",
+            f"Orchestration completed with {final_decision} using {safety_rule_applied or 'ollama_recommendation'}.",
         )
-        await self._record_node_execution("write_output", ["orchestrator_decision"], ["events_written"], int((time.time() - t) * 1000))
-        return {**state, "output_events": events_written, "next_agent": next_agent, "next_agent_triggered": next_agent}
+        await self._record_node_execution(
+            "write_output",
+            ["upstream_summary", "final_decision"],
+            ["events_written"],
+            int((time.time() - t) * 1000),
+        )
+        return {
+            **state,
+            "output_events": events_written,
+            "next_agent": None,
+            "next_agent_triggered": None,
+        }
