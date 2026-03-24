@@ -27,7 +27,31 @@ Additional domain streams: `credit-{id}`, `fraud-{id}`, `docpkg-{id}`, `audit-{i
 
 ## Backup and Restore
 
-The backup and restore procedure is intentionally deferred until the infrastructure decisions are finalized, but the operational rule is already fixed: any restore must be followed by a reset of projection checkpoints so projections rebuild from a known-good position instead of trusting stale `projection_checkpoints` rows. Retention planning should also account for GDPR-oriented crypto-shredding, which means the backup lifecycle needs a path for destroying encryption material when data must be rendered unrecoverable even if the backup media itself is retained.
+This repository keeps the event log and checkpoint state in PostgreSQL. In the Docker Compose layout, that data lives in the `ledger_pgdata` volume mounted at `/var/lib/postgresql/data`; in a local install, it is the database named by `DATABASE_URL` (default `apex_ledger`).
+
+- Back up the PostgreSQL database that holds `events`, `event_streams`, `outbox`, `projection_checkpoints`, `projection_dead_letters`, and `agent_checkpoints`.
+- If document-refinery indexing is enabled in a separate checkout, include its SQLite fact database too. The Ledger repo does not vendor that file, so back it up from the refinery workspace your deployment actually uses.
+- Back up before any replay, before any schema migration, and on a scheduled basis in production.
+- Write each backup to a timestamped path, for example `artifacts/backups/20260324T014500Z/`.
+
+Manual backup example:
+
+```bash
+ts=$(date -u +%Y%m%dT%H%M%SZ) && mkdir -p "artifacts/backups/$ts" && pg_dump "$DATABASE_URL" > "artifacts/backups/$ts/apex_ledger.sql"
+```
+
+Restore procedure:
+
+- Stop the server.
+- Restore the database snapshot or dump into the same PostgreSQL instance, or replace the `ledger_pgdata` volume contents if you use volume-level backups.
+- Restart the server.
+- Run `python scripts/replay_projection.py --all --confirm` so every projection is rebuilt from the restored event log. This is required because projections are derived state; the event log is the source of truth, and stale checkpoints must not be trusted.
+
+Warning: restoring an older backup discards every event written after the backup timestamp. That loss is irreversible.
+
+After restore, check `ledger://agents/stuck-sessions/{timeout_ms}` or `GET /agents/stuck-sessions?timeout_ms=...` for sessions that were in flight when the backup was taken. Their completion events will be missing, so they will appear stuck until you manually resolve or re-trigger them.
+
+To watch the rebuild, use `GET /replay/progress` or `ledger://replay/progress`. That surface is driven by the replay progress tracker used by `scripts/replay_projection.py`.
 
 ## Stream Naming Conventions
 
