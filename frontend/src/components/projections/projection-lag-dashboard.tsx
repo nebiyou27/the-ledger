@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { KpiCard } from '@/components/ui/kpi-card'
-import { dataSourceNote, listProjectionLag, refreshProjections } from '@/lib/ledger-api'
+import { dataSourceNote, listEventThroughput, listProjectionLag, refreshProjections } from '@/lib/ledger-api'
 import { formatDuration } from '@/lib/utils'
-import { ProjectionLagSnapshot } from '@/types/loan'
+import { EventThroughputSnapshot, ProjectionLagSnapshot } from '@/types/loan'
 
 const projectionMeta: Record<
   string,
@@ -73,8 +73,15 @@ function formatProjectionName(name: string) {
   return projectionMeta[name]?.label ?? name.replaceAll('_', ' ')
 }
 
-export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot: ProjectionLagSnapshot }) {
+export function ProjectionLagDashboard({
+  snapshot: initialSnapshot,
+  throughput: initialThroughput
+}: {
+  snapshot: ProjectionLagSnapshot
+  throughput: EventThroughputSnapshot
+}) {
   const [snapshot, setSnapshot] = useState(initialSnapshot)
+  const [throughput, setThroughput] = useState(initialThroughput)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null)
@@ -102,6 +109,16 @@ export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot
   const laggingProjections = rows.filter((row) => row.lag.positionsBehind > 0 || row.lag.millis > row.meta.targetMillis).length
   const healthyProjections = rows.length - laggingProjections
   const worstLag = rows[0]?.lag.millis ?? 0
+  const peakBucket =
+    throughput.buckets.reduce(
+      (winner, bucket) => (bucket.events > winner.events ? bucket : winner),
+      throughput.buckets[0] ?? {
+        label: throughput.peakBucketLabel,
+        events: throughput.peakBucketEvents,
+        startAt: throughput.windowStartAt,
+        endAt: throughput.windowStartAt
+      }
+    )
 
   async function handleRefresh() {
     setIsRefreshing(true)
@@ -110,7 +127,9 @@ export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot
     try {
       await refreshProjections()
       const nextSnapshot = await listProjectionLag()
+      const nextThroughput = await listEventThroughput()
       setSnapshot(nextSnapshot)
+      setThroughput(nextThroughput)
       setLastRefreshedAt(new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', second: '2-digit' }))
     } catch (error) {
       setRefreshError(error instanceof Error ? error.message : 'Refresh failed')
@@ -122,10 +141,21 @@ export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot
   return (
     <div className="space-y-6">
       <div className="grid gap-4 xl:grid-cols-4">
+        <KpiCard label="Events in Window" value={throughput.totalEvents.toString()} helperText={`Last ${throughput.windowMinutes} minutes of activity`} />
+        <KpiCard label="Event Throughput" value={`${throughput.eventsPerMinute.toFixed(1)} / min`} helperText="Average append rate over the observed window" />
+        <KpiCard label="Peak Burst" value={`${peakBucket.events} events`} helperText={`${throughput.bucketMinutes}-minute bucket at ${throughput.peakBucketLabel}`} />
         <KpiCard label="Projections Tracked" value={rows.length.toString()} helperText="Read models included in the runtime snapshot" />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-4">
         <KpiCard label="Healthy Projections" value={healthyProjections.toString()} helperText="Within position and latency targets" />
         <KpiCard label="Lagging Projections" value={laggingProjections.toString()} helperText="Need attention or a sync cycle" />
         <KpiCard label="Total Positions Behind" value={totalLaggedPositions.toString()} helperText={`Worst lag ${formatDuration(worstLag)}`} />
+        <KpiCard
+          label="Peak Event Hour"
+          value={`${throughput.eventsPerHour.toFixed(0)} / hr`}
+          helperText={`Latest event ${throughput.latestEventAt ? new Date(throughput.latestEventAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'unknown'}`}
+        />
       </div>
 
       <Card
@@ -153,7 +183,7 @@ export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot
             {refreshError}
           </div>
         ) : null}
-        <div className="grid gap-4 lg:grid-cols-[1.5fr_1fr]">
+        <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="space-y-4">
             {rows.map((row) => (
               <div key={row.name} className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
@@ -211,11 +241,58 @@ export function ProjectionLagDashboard({ snapshot: initialSnapshot }: { snapshot
           </div>
 
           <div className="space-y-4">
+            <Card title="Event Throughput" eyebrow="Append velocity">
+              <div className="space-y-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Window</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900">{throughput.windowMinutes} min</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Peak Bucket</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900">{throughput.peakBucketEvents} events</div>
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Latest Event</div>
+                    <div className="mt-1 text-lg font-semibold text-slate-900">
+                      {throughput.latestEventAt ? new Date(throughput.latestEventAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : 'Unknown'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>5-minute buckets</span>
+                    <span>{throughput.totalEvents} events total</span>
+                  </div>
+                  <div className="flex h-32 items-end gap-2 rounded-3xl border border-slate-200 bg-white px-4 py-3">
+                    {throughput.buckets.map((bucket) => {
+                      const maxEvents = Math.max(1, throughput.peakBucketEvents)
+                      const height = Math.max(8, Math.round((bucket.events / maxEvents) * 100))
+                      return (
+                        <div key={`${bucket.label}-${bucket.startAt}`} className="flex flex-1 flex-col items-center gap-2">
+                          <div className="flex h-full w-full items-end">
+                            <div
+                              className="w-full rounded-t-2xl bg-gradient-to-t from-teal-600 to-cyan-400 shadow-sm shadow-teal-200/60"
+                              style={{ height: `${height}%` }}
+                              title={`${bucket.label}: ${bucket.events} events`}
+                            />
+                          </div>
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">{bucket.label}</div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            </Card>
+
             <Card title="Operational Notes" eyebrow="How to read this" className="bg-slate-950 text-slate-100 shadow-slate-900/20">
               <div className="space-y-3 text-sm leading-6 text-slate-300">
+                <p>Throughput measures how many events arrived during the most recent observed window.</p>
                 <p>Positions behind measures how many events a projection still needs to process.</p>
                 <p>Latency is derived from the newest event timestamp versus the last processed event timestamp.</p>
-                <p>If you connect the Python backend, this panel reads live lag from <code>/projections/lag</code>.</p>
+                <p>If you connect the Python backend, this panel reads live lag from <code>/projections/lag</code> and throughput from <code>/metrics/events</code>.</p>
               </div>
             </Card>
 

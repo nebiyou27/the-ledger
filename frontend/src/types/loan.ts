@@ -127,3 +127,24 @@ export interface ProjectionLagEntry {
 }
 
 export type ProjectionLagSnapshot = Record<string, ProjectionLagEntry>
+
+export interface EventThroughputBucket {
+  label: string
+  events: number
+  startAt: string
+  endAt: string
+}
+
+export interface EventThroughputSnapshot {
+  windowMinutes: number
+  bucketMinutes: number
+  windowStartAt: string
+  windowEndAt: string
+  latestEventAt: string
+  totalEvents: number
+  eventsPerMinute: number
+  eventsPerHour: number
+  peakBucketEvents: number
+  peakBucketLabel: string
+  buckets: EventThroughputBucket[]
+}

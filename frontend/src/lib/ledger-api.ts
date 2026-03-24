@@ -1,5 +1,5 @@
-import { agentPerformance, applications, complianceRows, projectionLagSnapshot, reviewQueue, timelineEvents } from '@/data/mock-data'
-import { LoanApplication, ProjectionLagSnapshot, ReviewQueueItem } from '@/types/loan'
+import { agentPerformance, applications, complianceRows, eventThroughputSnapshot, projectionLagSnapshot, reviewQueue, timelineEvents } from '@/data/mock-data'
+import { EventThroughputSnapshot, LoanApplication, ProjectionLagSnapshot, ReviewQueueItem } from '@/types/loan'
 
 const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
 const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
@@ -55,6 +55,10 @@ export async function listAgentPerformance() {
 
 export async function listProjectionLag() {
   return loadOrMock<ProjectionLagSnapshot>('/projections/lag', projectionLagSnapshot)
+}
+
+export async function listEventThroughput() {
+  return loadOrMock<EventThroughputSnapshot>('/metrics/events', eventThroughputSnapshot)
 }
 
 export async function refreshProjections() {

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from ledger.event_store import InMemoryEventStore
+from ledger.metrics import build_event_throughput_snapshot
 from ledger.observability import StoreMetrics
 from ledger.projections.base import Projection
 from ledger.projections.daemon import ProjectionDaemon
@@ -94,3 +97,22 @@ async def test_projection_daemon_dead_letters_permanent_failures_and_advances_ch
     assert record["projection_name"] == "always_fail"
     assert record["event_type"] == "SmokeStarted"
     assert record["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_event_throughput_snapshot_uses_recent_window_and_buckets():
+    store = InMemoryEventStore()
+    events = [
+        {"event_type": "SmokeStarted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 9, 30, tzinfo=timezone.utc)},
+        {"event_type": "SmokeStarted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 10, 24, tzinfo=timezone.utc)},
+        {"event_type": "SmokeStarted", "event_version": 1, "payload": {}, "recorded_at": datetime(2026, 3, 24, 10, 29, tzinfo=timezone.utc)},
+    ]
+    await store.append("loan-OBS-4", events, expected_version=-1)
+
+    snapshot = await build_event_throughput_snapshot(store, window_minutes=60, bucket_minutes=5)
+
+    assert snapshot["totalEvents"] == 3
+    assert snapshot["eventsPerMinute"] == 0.05
+    assert snapshot["eventsPerHour"] == 3.0
+    assert snapshot["peakBucketEvents"] == 2
+    assert len(snapshot["buckets"]) == 12

@@ -1,4 +1,11 @@
-import { AgentPerformanceRecord, LoanApplication, ProjectionLagSnapshot, ReviewQueueItem, TimelineEvent } from '@/types/loan'
+import {
+  AgentPerformanceRecord,
+  EventThroughputSnapshot,
+  LoanApplication,
+  ProjectionLagSnapshot,
+  ReviewQueueItem,
+  TimelineEvent
+} from '@/types/loan'
 
 function makeEvent(
   eventName: string,
@@ -407,4 +414,31 @@ export const projectionLagSnapshot: ProjectionLagSnapshot = {
   agent_performance: { positionsBehind: 0, millis: 95 },
   compliance_audit: { positionsBehind: 3, millis: 2460 },
   manual_reviews: { positionsBehind: 0, millis: 120 }
+}
+
+export const eventThroughputSnapshot: EventThroughputSnapshot = {
+  windowMinutes: 60,
+  bucketMinutes: 5,
+  windowStartAt: '2026-03-19T09:30:00Z',
+  windowEndAt: '2026-03-19T10:30:00Z',
+  latestEventAt: '2026-03-19T10:30:00Z',
+  totalEvents: 42,
+  eventsPerMinute: 0.7,
+  eventsPerHour: 42,
+  peakBucketEvents: 6,
+  peakBucketLabel: '10:00',
+  buckets: [
+    { label: '09:30', events: 2, startAt: '2026-03-19T09:30:00Z', endAt: '2026-03-19T09:35:00Z' },
+    { label: '09:35', events: 3, startAt: '2026-03-19T09:35:00Z', endAt: '2026-03-19T09:40:00Z' },
+    { label: '09:40', events: 4, startAt: '2026-03-19T09:40:00Z', endAt: '2026-03-19T09:45:00Z' },
+    { label: '09:45', events: 5, startAt: '2026-03-19T09:45:00Z', endAt: '2026-03-19T09:50:00Z' },
+    { label: '09:50', events: 4, startAt: '2026-03-19T09:50:00Z', endAt: '2026-03-19T09:55:00Z' },
+    { label: '09:55', events: 6, startAt: '2026-03-19T09:55:00Z', endAt: '2026-03-19T10:00:00Z' },
+    { label: '10:00', events: 6, startAt: '2026-03-19T10:00:00Z', endAt: '2026-03-19T10:05:00Z' },
+    { label: '10:05', events: 5, startAt: '2026-03-19T10:05:00Z', endAt: '2026-03-19T10:10:00Z' },
+    { label: '10:10', events: 4, startAt: '2026-03-19T10:10:00Z', endAt: '2026-03-19T10:15:00Z' },
+    { label: '10:15', events: 3, startAt: '2026-03-19T10:15:00Z', endAt: '2026-03-19T10:20:00Z' },
+    { label: '10:20', events: 2, startAt: '2026-03-19T10:20:00Z', endAt: '2026-03-19T10:25:00Z' },
+    { label: '10:25', events: 4, startAt: '2026-03-19T10:25:00Z', endAt: '2026-03-19T10:30:00Z' }
+  ]
 }

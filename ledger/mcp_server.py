@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 from ledger.exceptions import OptimisticConcurrencyError
 from ledger.integrity import run_integrity_check
 from ledger.event_store import EventStore, InMemoryEventStore
+from ledger.metrics import build_event_throughput_snapshot
 from ledger.projections import (
     AgentSessionFailureProjection,
     AgentPerformanceProjection,
@@ -652,6 +653,21 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
     )
     async def manual_reviews() -> list[dict[str, Any]]:
         return _json_text(runtime.manual_reviews.all_rows())
+
+    @server.resource(
+        "ledger://metrics/event-throughput",
+        name="event_throughput",
+        mime_type="application/json",
+        description="Event throughput snapshot over the most recent window.",
+    )
+    async def event_throughput(window_minutes: int = 60, bucket_minutes: int = 5) -> dict[str, Any]:
+        return _json_text(
+            await build_event_throughput_snapshot(
+                runtime.store,
+                window_minutes=window_minutes,
+                bucket_minutes=bucket_minutes,
+            )
+        )
 
     return server
 
