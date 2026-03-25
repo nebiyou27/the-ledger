@@ -493,7 +493,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("OLLAMA_MODEL", "deepseek-r1:8b"),
+        default=os.environ.get("OLLAMA_MODEL", "llama3:8b"),
         help="Ollama model name when --llm ollama is selected.",
     )
     return parser

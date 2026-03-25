@@ -7,6 +7,7 @@ Replaces the hard Anthropic dependency in BaseApexAgent.
 from __future__ import annotations
 
 import json
+import os
 import re
 from abc import ABC, abstractmethod
 from typing import Any
@@ -36,7 +37,7 @@ class OllamaClient(LLMClient):
 
     def __init__(
         self,
-        model: str = "deepseek-r1:8b",
+        model: str = os.getenv("OLLAMA_MODEL", "llama3:8b"),
         base_url: str = "http://localhost:11434",
     ):
         self.model = model

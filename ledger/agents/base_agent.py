@@ -6,7 +6,7 @@ CreditAnalysisAgent is the reference implementation with full LangGraph pattern.
 The other 4 agents are stubs with complete docstrings for implementation.
 """
 from __future__ import annotations
-import asyncio, hashlib, json, time
+import asyncio, hashlib, json, os, time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from uuid import uuid4
@@ -40,7 +40,7 @@ class BaseApexAgent(ABC):
     Each tool/registry call must call self._record_tool_call().
     The write_output node must call self._record_output_written() then self._record_node_execution().
     """
-    def __init__(self, agent_id: str, agent_type: str, store, registry, llm: LLMClient | None = None, model="deepseek-r1:8b", client=None):
+    def __init__(self, agent_id: str, agent_type: str, store, registry, llm: LLMClient | None = None, model=os.getenv("OLLAMA_MODEL", "llama3:8b"), client=None):
         self.agent_id = agent_id; self.agent_type = agent_type
         self.store = store; self.registry = registry
         self.llm = llm or OllamaClient(model=model); self.model = model

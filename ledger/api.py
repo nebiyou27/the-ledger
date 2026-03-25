@@ -347,7 +347,7 @@ def create_app() -> FastAPI:
             phase="all",
             db_url=db_url,
             llm="mock",
-            model="deepseek-r1:8b",
+            model=os.environ.get("OLLAMA_MODEL", "llama3:8b"),
         )
         pipeline_result = await run_pipeline(pipeline_args)
         if pipeline_result != 0:
