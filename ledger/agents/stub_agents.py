@@ -15,7 +15,7 @@ Pattern: follow CreditAnalysisAgent exactly. Same build_graph() structure,
 same _record_node_execution() calls, same _append_with_retry() for domain writes.
 """
 from __future__ import annotations
-import time, json, re
+import os, time, json, re
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
