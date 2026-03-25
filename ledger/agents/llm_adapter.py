@@ -1,8 +1,8 @@
 """
 ledger/agents/llm_adapter.py
 =============================
-LLM abstraction layer. Supports Ollama (local) and a deterministic mock for tests.
-Replaces the hard Anthropic dependency in BaseApexAgent.
+LLM abstraction layer. Supports an OpenRouter-backed OpenAI SDK client and a deterministic
+mock for tests.
 """
 from __future__ import annotations
 
@@ -13,9 +13,13 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 try:
-    import httpx
+    from openai import AsyncOpenAI
 except ModuleNotFoundError:  # pragma: no cover
-    httpx = None
+    AsyncOpenAI = None
+
+
+def _default_model() -> str:
+    return os.getenv("OPENROUTER_MODEL", os.getenv("OLLAMA_MODEL", "google/gemini-2.5-flash"))
 
 
 class LLMClient(ABC):
@@ -32,16 +36,28 @@ class LLMClient(ABC):
         ...
 
 
-class OllamaClient(LLMClient):
-    """Calls a local Ollama instance via its HTTP API."""
+class OpenRouterClient(LLMClient):
+    """Calls OpenRouter via the OpenAI-compatible async SDK."""
 
     def __init__(
         self,
-        model: str = os.getenv("OLLAMA_MODEL", "llama3:8b"),
-        base_url: str = "http://localhost:11434",
+        model: str = _default_model(),
+        base_url: str = "https://openrouter.ai/api/v1",
+        api_key: str | None = None,
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
+        self._client: AsyncOpenAI | None = None
+
+    def _get_client(self) -> AsyncOpenAI:
+        if AsyncOpenAI is None:
+            raise RuntimeError("openai is required for OpenRouterClient: pip install openai")
+        if not self.api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouterClient")
+        if self._client is None:
+            self._client = AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+        return self._client
 
     async def generate(
         self,
@@ -49,37 +65,32 @@ class OllamaClient(LLMClient):
         user: str,
         max_tokens: int = 1024,
     ) -> tuple[str, int, int, float]:
-        if httpx is None:
-            raise RuntimeError("httpx is required for OllamaClient: pip install httpx")
+        client = self._get_client()
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3,
+        )
 
-        payload = {
-            "model": self.model,
-            "system": system,
-            "prompt": user,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "temperature": 0.3,
-            },
-        }
+        content = ""
+        if response.choices:
+            message = response.choices[0].message
+            content = getattr(message, "content", "") or ""
+        text = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{self.base_url}/api/generate",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        text = data.get("response", "")
-        # DeepSeek-R1 wraps reasoning in <think>...</think> tags; strip them.
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-        tokens_in = data.get("prompt_eval_count", 0) or 0
-        tokens_out = data.get("eval_count", 0) or 0
-        # Local models have zero dollar cost.
+        usage = getattr(response, "usage", None)
+        tokens_in = getattr(usage, "prompt_tokens", 0) or 0
+        tokens_out = getattr(usage, "completion_tokens", 0) or 0
         cost = 0.0
         return text, tokens_in, tokens_out, cost
+
+
+# Backward-compatible alias used across the codebase.
+OllamaClient = OpenRouterClient
 
 
 class MockLLMClient(LLMClient):

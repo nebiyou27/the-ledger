@@ -121,7 +121,7 @@
 - [x] `DATA_GENERATION.md`
 - [x] `artifacts/regulatory_package_NARR05.json`
 - [x] `artifacts/narrative_test_results.txt`
-- [ ] `artifacts/api_cost_report.txt`
+- [x] `artifacts/api_cost_report.txt`
 
 
 

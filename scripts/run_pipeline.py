@@ -488,13 +488,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--llm",
         default="mock",
-        choices=["mock", "ollama"],
+        choices=["mock", "openrouter"],
         help="Choose the LLM backend used by the agents.",
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("OLLAMA_MODEL", "llama3:8b"),
-        help="Ollama model name when --llm ollama is selected.",
+        default=os.environ.get("OPENROUTER_MODEL", os.environ.get("OLLAMA_MODEL", "google/gemini-2.5-flash")),
+        help="Model name used by the OpenAI-compatible LLM backend.",
     )
     return parser
 

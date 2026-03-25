@@ -347,7 +347,7 @@ def create_app() -> FastAPI:
             phase="all",
             db_url=db_url,
             llm="mock",
-            model=os.environ.get("OLLAMA_MODEL", "llama3:8b"),
+            model=os.environ.get("OPENROUTER_MODEL", os.environ.get("OLLAMA_MODEL", "google/gemini-2.5-flash")),
         )
         pipeline_result = await run_pipeline(pipeline_args)
         if pipeline_result != 0:

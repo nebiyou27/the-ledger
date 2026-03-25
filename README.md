@@ -114,6 +114,8 @@ frontend/   React UI for the demo experience
 
 Common environment variables:
 
+- `OPENROUTER_API_KEY` and `OPENROUTER_MODEL` for the primary OpenRouter path
+- `OLLAMA_MODEL` for the local fallback used in tests and offline runs
 - `DATABASE_URL`
 - `TEST_DB_URL`
 - `ANTHROPIC_API_KEY`

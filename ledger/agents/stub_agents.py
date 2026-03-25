@@ -152,7 +152,7 @@ class DocumentProcessingAgent(BaseApexAgent):
           â†’ CreditAnalysisRequested on loan stream
     """
 
-    def __init__(self, agent_id: str, agent_type: str, store, registry, llm=None, model=os.getenv("OLLAMA_MODEL", "llama3:8b"), client=None, extraction_adapter=None):
+    def __init__(self, agent_id: str, agent_type: str, store, registry, llm=None, model=os.getenv("OPENROUTER_MODEL", os.getenv("OLLAMA_MODEL", "google/gemini-2.5-flash")), client=None, extraction_adapter=None):
         super().__init__(agent_id, agent_type, store, registry, llm=llm, model=model, client=client)
         self.extraction_adapter = extraction_adapter or DatagenExtractionAdapter()
 

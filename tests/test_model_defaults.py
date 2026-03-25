@@ -19,7 +19,10 @@ TEST_MODEL = "test-model:latest"
     ],
 )
 def test_constructor_defaults_follow_ollama_model_env(monkeypatch, module_name, class_name, param_name):
-    monkeypatch.setenv("OLLAMA_MODEL", TEST_MODEL)
+    if module_name == "ledger.agents.ollama_client":
+        monkeypatch.setenv("OLLAMA_MODEL", TEST_MODEL)
+    else:
+        monkeypatch.setenv("OPENROUTER_MODEL", TEST_MODEL)
 
     module = importlib.import_module(module_name)
     module = importlib.reload(module)
@@ -31,7 +34,7 @@ def test_constructor_defaults_follow_ollama_model_env(monkeypatch, module_name, 
 
 
 def test_pipeline_parser_defaults_follow_ollama_model_env(monkeypatch):
-    monkeypatch.setenv("OLLAMA_MODEL", TEST_MODEL)
+    monkeypatch.setenv("OPENROUTER_MODEL", TEST_MODEL)
 
     from scripts.run_pipeline import build_parser
 
