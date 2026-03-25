@@ -19,7 +19,7 @@ def test_credit_analysis_upcast_v1_to_v2_adds_regulatory_basis():
     upcasted = registry.upcast(raw)
 
     assert upcasted["event_version"] == 2
-    assert upcasted["payload"]["regulatory_basis"] is None
+    assert upcasted["payload"]["regulatory_basis"] == ["REG-001", "REG-002", "REG-003"]
     assert "regulatory_basis" not in raw["payload"]
 
 

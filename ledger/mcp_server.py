@@ -64,6 +64,26 @@ def _structured_ok(tool: str, **payload: Any) -> dict[str, Any]:
     return {"ok": True, "tool": tool, **{key: _json_safe(value) for key, value in payload.items()}}
 
 
+def _command_context(command: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not command:
+        return {}
+    keys = (
+        "application_id",
+        "session_id",
+        "orchestrator_session_id",
+        "entity_type",
+        "entity_id",
+        "stream_id",
+        "expected_version",
+        "actual_version",
+        "correlation_id",
+        "causation_id",
+    )
+    context = {key: command[key] for key in keys if key in command and command[key] is not None}
+    context["command"] = _json_safe(command)
+    return context
+
+
 def _suggested_action_for(exc: Exception) -> str:
     if isinstance(exc, OptimisticConcurrencyError):
         return "reload_stream_and_retry"
@@ -72,12 +92,14 @@ def _suggested_action_for(exc: Exception) -> str:
     return "inspect_error_and_retry"
 
 
-def _structured_error(tool: str, exc: Exception) -> dict[str, Any]:
+def _structured_error(tool: str, exc: Exception, context: dict[str, Any] | None = None) -> dict[str, Any]:
     error_type = exc.__class__.__name__
+    error_context = _json_safe(context or {})
     error: dict[str, Any] = {
         "type": error_type,
         "error_type": error_type,
         "message": str(exc),
+        "context": error_context,
         "suggested_action": _suggested_action_for(exc),
     }
     if isinstance(exc, OptimisticConcurrencyError):
@@ -94,6 +116,7 @@ def _structured_error(tool: str, exc: Exception) -> dict[str, Any]:
         "tool": tool,
         "error_type": error_type,
         "message": str(exc),
+        "context": error_context,
         "suggested_action": error["suggested_action"],
         **{key: error[key] for key in ("stream_id", "expected_version", "actual_version") if key in error},
         "error": error,
@@ -161,7 +184,7 @@ class MCPRuntime:
                 sync=sync_report,
             )
         except Exception as exc:  # pragma: no cover - exercised through tool wrappers
-            return _structured_error(tool_name, exc)
+            return _structured_error(tool_name, exc, context=_command_context(command))
 
 
 def create_runtime(store: Any | None = None) -> MCPRuntime:
@@ -204,7 +227,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
         ),
     )
 
-    @server.tool(name="submit_application", description="Append an application submission and document request.")
+    @server.tool(
+        name="submit_application",
+        description=(
+            "Append an application submission and document request. "
+            "Preconditions: use only for a brand-new loan application; requested_amount_usd must be positive."
+        ),
+    )
     async def submit_application(
         application_id: str,
         applicant_id: str,
@@ -242,7 +271,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="start_agent_session", description="Append an agent session start event.")
+    @server.tool(
+        name="start_agent_session",
+        description=(
+            "Append an agent session start event. "
+            "Preconditions: the session stream must not already exist; agent_id, agent_type, application_id, and model_version are required."
+        ),
+    )
     async def start_agent_session(
         application_id: str,
         session_id: str,
@@ -274,7 +309,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_credit_analysis", description="Append a completed credit analysis event.")
+    @server.tool(
+        name="record_credit_analysis",
+        description=(
+            "Append a completed credit analysis event. "
+            "Preconditions: the credit session must already be started, context must be loaded, and the model_version must match the active session."
+        ),
+    )
     async def record_credit_analysis(
         application_id: str,
         session_id: str,
@@ -322,7 +363,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_fraud_screening", description="Append a completed fraud screening event.")
+    @server.tool(
+        name="record_fraud_screening",
+        description=(
+            "Append a completed fraud screening event. "
+            "Preconditions: the fraud session must already be started and the result must refer to the active application."
+        ),
+    )
     async def record_fraud_screening(
         application_id: str,
         session_id: str,
@@ -360,7 +407,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_compliance_check", description="Append a completed compliance check.")
+    @server.tool(
+        name="record_compliance_check",
+        description=(
+            "Append a completed compliance check. "
+            "Preconditions: the compliance session must already be started and rule counts must match the rule events being written."
+        ),
+    )
     async def record_compliance_check(
         application_id: str,
         session_id: str,
@@ -412,7 +465,14 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="generate_decision", description="Append an orchestrator decision and optional downstream event.")
+    @server.tool(
+        name="generate_decision",
+        description=(
+            "Append an orchestrator decision and optional downstream event. "
+            "Preconditions: the application must be non-terminal, contributing sessions must have decision events for the same application, "
+            "and compliance BLOCKED can only yield DECLINE."
+        ),
+    )
     async def generate_decision(
         application_id: str,
         orchestrator_session_id: str,
@@ -464,7 +524,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="record_human_review", description="Append a completed human review event.")
+    @server.tool(
+        name="record_human_review",
+        description=(
+            "Append a completed human review event. "
+            "Preconditions: the application must already be in human review flow; approval requires completed non-blocked compliance."
+        ),
+    )
     async def record_human_review(
         application_id: str,
         reviewer_id: str,
@@ -508,7 +574,13 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             },
         )
 
-    @server.tool(name="run_integrity_check", description="Run a read-only audit-chain integrity check.")
+    @server.tool(
+        name="run_integrity_check",
+        description=(
+            "Run a read-only audit-chain integrity check. "
+            "Preconditions: the entity stream must be addressable; the tool will append an AuditIntegrityCheckRun record to the audit stream."
+        ),
+    )
     async def run_integrity_check_tool(
         entity_type: str,
         entity_id: str,
@@ -534,7 +606,11 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             await runtime.store.append(audit_stream, [audit_event], expected_version=current_version)
             return _structured_ok("run_integrity_check", result=result)
         except Exception as exc:  # pragma: no cover - defensive wrapper
-            return _structured_error("run_integrity_check", exc)
+            return _structured_error(
+                "run_integrity_check",
+                exc,
+                context={"entity_type": entity_type, "entity_id": entity_id},
+            )
 
     @server.tool(name="refresh_projections", description="Drain pending events into all projections.")
     async def refresh_projections(max_rounds: int = 32) -> dict[str, Any]:
@@ -542,7 +618,7 @@ def create_server(runtime: MCPRuntime | None = None) -> FastMCP:
             report = await runtime.sync_projections(max_rounds=max_rounds)
             return _structured_ok("refresh_projections", **report)
         except Exception as exc:  # pragma: no cover - defensive wrapper
-            return _structured_error("refresh_projections", exc)
+            return _structured_error("refresh_projections", exc, context={"max_rounds": max_rounds})
 
     @server.resource(
         "ledger://applications/{application_id}",

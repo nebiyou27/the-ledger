@@ -108,6 +108,23 @@ def _row_to_stream_metadata(row: Any) -> StreamMetadata:
     return StreamMetadata.model_validate(metadata)
 
 
+def _extract_application_id(event: dict[str, Any]) -> str | None:
+    payload = event.get("payload") or {}
+    application_id = payload.get("application_id")
+    return str(application_id) if application_id else None
+
+
+async def _collect_application_history(store: Any, application_id: str) -> list[dict[str, Any]]:
+    loader = getattr(store, "load_application_events", None)
+    if loader is not None:
+        return [dict(event) for event in await loader(application_id)]
+
+    history: list[dict[str, Any]] = []
+    async for event in store.load_all(from_position=0, application_id=application_id):
+        history.append(dict(event))
+    return history
+
+
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[1] / "sql" / "event_store.sql"
 
 
@@ -156,6 +173,18 @@ class EventStore:
                 stream_id,
             )
             return row["current_version"] if row else -1
+
+    async def load_application_events(self, application_id: str) -> list[dict[str, Any]]:
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT event_id, stream_id, stream_position, global_position, event_type, "
+                "event_version, payload, metadata, recorded_at "
+                "FROM events WHERE payload->>'application_id' = $1 "
+                "ORDER BY global_position ASC",
+                application_id,
+            )
+        return [_row_to_event(row) for row in rows]
 
     async def append(
         self,
@@ -321,19 +350,38 @@ class EventStore:
 
         events = [_row_to_stored_event(row) for row in rows]
         if self.upcasters:
-            return [StoredEvent.model_validate(self.upcasters.upcast(event.model_dump(mode="python"))) for event in events]
+            application_id = next((app_id for app_id in (_extract_application_id(event.model_dump(mode="python")) for event in events) if app_id), None)
+            history_events: list[dict[str, Any]] = []
+            if application_id is not None:
+                history_events = await _collect_application_history(self, application_id)
+
+            upcasted: list[StoredEvent] = []
+            for event in events:
+                raw = event.model_dump(mode="python")
+                context = None
+                if history_events:
+                    current_position = int(raw.get("global_position", -1))
+                    context = {
+                        "application_id": application_id,
+                        "history_events": [history for history in history_events if int(history.get("global_position", -1)) < current_position],
+                    }
+                upcasted.append(StoredEvent.model_validate(self.upcasters.upcast(raw, context=context)))
+            return upcasted
         return events
 
     async def load_all(
         self,
         from_position: int = 0,
+        from_global_position: int | None = None,
         batch_size: int = 500,
         event_types: list[str] | None = None,
         application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         self._metrics.load_all_calls += 1
         pool = self._require_pool()
-        last_seen = from_position - 1
+        start_position = from_global_position if from_global_position is not None else from_position
+        last_seen = start_position - 1
+        history_by_application: dict[str, list[dict[str, Any]]] = {}
 
         async with pool.acquire() as conn:
             while True:
@@ -384,8 +432,17 @@ class EventStore:
 
                 for row in rows:
                     event = _row_to_event(row)
+                    app_id = application_id or _extract_application_id(event)
+                    context = None
+                    if self.upcasters and app_id:
+                        context = {
+                            "application_id": app_id,
+                            "history_events": [dict(previous) for previous in history_by_application.get(app_id, [])],
+                        }
                     if self.upcasters:
-                        event = self.upcasters.upcast(dict(event))
+                        event = self.upcasters.upcast(dict(event), context=context)
+                    if app_id:
+                        history_by_application.setdefault(app_id, []).append(dict(event))
                     yield event
 
                 last_seen = rows[-1]["global_position"]
@@ -406,7 +463,16 @@ class EventStore:
             return None
         event = _row_to_event(row)
         if self.upcasters:
-            event = self.upcasters.upcast(dict(event))
+            app_id = _extract_application_id(event)
+            context = None
+            if app_id:
+                history_events = await _collect_application_history(self, app_id)
+                current_position = int(event.get("global_position", -1))
+                context = {
+                    "application_id": app_id,
+                    "history_events": [history for history in history_events if int(history.get("global_position", -1)) < current_position],
+                }
+            event = self.upcasters.upcast(dict(event), context=context)
         return event
 
     async def archive_stream(self, stream_id: str) -> None:
@@ -611,6 +677,13 @@ class InMemoryEventStore:
     async def stream_version(self, stream_id: str) -> int:
         return self._versions.get(stream_id, -1)
 
+    async def load_application_events(self, application_id: str) -> list[dict[str, Any]]:
+        return [
+            dict(event)
+            for event in self._global
+            if str(event.get("payload", {}).get("application_id") or "") == application_id
+        ]
+
     async def append(
         self,
         stream_id: str,
@@ -721,30 +794,58 @@ class InMemoryEventStore:
             and (to_position is None or event["stream_position"] <= to_position)
         ]
         if self.upcasters:
-            return [StoredEvent.model_validate(self.upcasters.upcast(event.model_dump(mode="python"))) for event in events]
+            application_id = next((app_id for app_id in (_extract_application_id(event.model_dump(mode="python")) for event in events) if app_id), None)
+            history_events: list[dict[str, Any]] = []
+            if application_id is not None:
+                history_events = await _collect_application_history(self, application_id)
+
+            upcasted: list[StoredEvent] = []
+            for event in events:
+                raw = event.model_dump(mode="python")
+                context = None
+                if history_events:
+                    current_position = int(raw.get("global_position", -1))
+                    context = {
+                        "application_id": application_id,
+                        "history_events": [history for history in history_events if int(history.get("global_position", -1)) < current_position],
+                    }
+                upcasted.append(StoredEvent.model_validate(self.upcasters.upcast(raw, context=context)))
+            return upcasted
         return events
 
     async def load_all(
         self,
         from_position: int = 0,
+        from_global_position: int | None = None,
         batch_size: int = 500,
         event_types: list[str] | None = None,
         application_id: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         self._metrics.load_all_calls += 1
+        start_position = from_global_position if from_global_position is not None else from_position
         yielded = 0
+        history_by_application: dict[str, list[dict[str, Any]]] = {}
         for event in self._global:
-            if event["global_position"] < from_position:
+            if event["global_position"] < start_position:
                 continue
             if event_types and event["event_type"] not in event_types:
                 continue
             if application_id is not None and str(event.get("payload", {}).get("application_id")) != application_id:
                 continue
             yielded += 1
+            current = dict(event)
+            app_id = application_id or _extract_application_id(current)
+            context = None
+            if self.upcasters and app_id:
+                context = {
+                    "application_id": app_id,
+                    "history_events": [dict(previous) for previous in history_by_application.get(app_id, [])],
+                }
             if self.upcasters:
-                yield self.upcasters.upcast(dict(event))
-            else:
-                yield dict(event)
+                current = self.upcasters.upcast(current, context=context)
+            if app_id:
+                history_by_application.setdefault(app_id, []).append(dict(current))
+            yield current
             if yielded % batch_size == 0:
                 await asyncio.sleep(0)
 
@@ -753,7 +854,18 @@ class InMemoryEventStore:
         event_id_str = str(event_id)
         for event in self._global:
             if event["event_id"] == event_id_str:
-                return dict(event)
+                current = dict(event)
+                if self.upcasters:
+                    app_id = _extract_application_id(current)
+                    context = None
+                    if app_id:
+                        history_events = [dict(candidate) for candidate in self._global if candidate.get("global_position", -1) < current.get("global_position", -1) and str(candidate.get("payload", {}).get("application_id") or "") == app_id]
+                        context = {
+                            "application_id": app_id,
+                            "history_events": history_events,
+                        }
+                    current = self.upcasters.upcast(current, context=context)
+                return current
         return None
 
     async def archive_stream(self, stream_id: str) -> None:

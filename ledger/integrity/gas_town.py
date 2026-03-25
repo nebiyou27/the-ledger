@@ -49,17 +49,30 @@ def _derive_pending_work(events: list[dict[str, Any]]) -> list[str]:
     return pending
 
 
+def _preserve_verbatim(event: dict[str, Any]) -> bool:
+    etype = str(event.get("event_type", ""))
+    payload = event.get("payload") or {}
+    status = str(payload.get("status", "")).upper()
+    return (
+        etype.endswith("Failed")
+        or "ERROR" in etype.upper()
+        or status in {"PENDING", "ERROR"}
+        or etype in {"AgentSessionFailed", "AgentInputValidationFailed", "HumanReviewRequested"}
+    )
+
+
 def _summarize(events: list[dict[str, Any]], token_budget: int) -> str:
     if not events:
         return "No prior events."
     prefix = "Session replay summary:\n"
-    lines = [f"- {ev.get('event_type')} @ pos={ev.get('stream_position')}" for ev in events[:-3]]
-    verbatim = []
-    for ev in events[-3:]:
-        verbatim.append(
-            f"- VERBATIM {ev.get('event_type')} payload={ev.get('payload')}"
-        )
-    text = prefix + "\n".join(lines + verbatim)
+    verbatim_cutoff = max(0, len(events) - 3)
+    lines = []
+    for idx, ev in enumerate(events):
+        if idx >= verbatim_cutoff or _preserve_verbatim(ev):
+            lines.append(f"- VERBATIM {ev.get('event_type')} payload={ev.get('payload')}")
+        else:
+            lines.append(f"- {ev.get('event_type')} @ pos={ev.get('stream_position')}")
+    text = prefix + "\n".join(lines)
     max_chars = max(200, token_budget * 4)
     return text[:max_chars]
 

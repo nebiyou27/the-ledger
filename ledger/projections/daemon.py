@@ -57,7 +57,7 @@ class ProjectionDaemon:
         processed_any = 0
 
         events: list[dict[str, Any]] = []
-        async for event in self._store.load_all(from_position=from_position, batch_size=batch_size):
+        async for event in self._store.load_all(from_global_position=from_position, batch_size=batch_size):
             events.append(event)
             if len(events) >= batch_size:
                 break

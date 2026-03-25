@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-UpcastFn = Callable[[dict[str, Any], dict[str, Any], "UpcasterRegistry"], dict[str, Any]]
+UpcastFn = Callable[
+    [dict[str, Any], dict[str, Any], "UpcasterRegistry", dict[str, Any] | None],
+    dict[str, Any],
+]
 
 
 @dataclass
@@ -36,7 +39,7 @@ class UpcasterRegistry:
             raise ValueError("Upcasters must advance exactly one version at a time")
         return self.register(event_type=event_type, from_version=from_version)
 
-    def upcast(self, event: dict[str, Any]) -> dict[str, Any]:
+    def upcast(self, event: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
         current = dict(event)
         current["payload"] = dict(current.get("payload") or {})
         event_type = str(current.get("event_type", ""))
@@ -44,7 +47,7 @@ class UpcasterRegistry:
 
         while (event_type, version) in self._upcasters:
             fn = self._upcasters[(event_type, version)]
-            new_payload = fn(dict(current["payload"]), dict(current), self)
+            new_payload = fn(dict(current["payload"]), dict(current), self, context)
             current["payload"] = dict(new_payload or {})
             version += 1
             current["event_version"] = version
