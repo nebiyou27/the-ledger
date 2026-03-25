@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { Card } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/status-badge'
 import { Timeline } from '@/components/ui/timeline'
+import { ledgerApiBaseUrl } from '@/lib/ledger-api'
 import { formatCurrency, formatDateTime, formatPercent } from '@/lib/utils'
 import { LoanApplication } from '@/types/loan'
 
@@ -185,10 +186,22 @@ export function ApplicationDetail({ application }: { application: LoanApplicatio
                     {document.type} - {document.size}
                   </div>
                 </div>
-                <StatusBadge
-                  value={document.status === 'verified' ? 'Approved' : document.status === 'extracted' ? 'Human Review' : 'In Progress'}
-                  kind="application"
-                />
+                <div className="flex items-center gap-3">
+                  {document.downloadUrl && ledgerApiBaseUrl ? (
+                    <a
+                      href={`${ledgerApiBaseUrl}${document.downloadUrl}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm font-semibold text-teal-700 hover:text-teal-900"
+                    >
+                      Open file
+                    </a>
+                  ) : null}
+                  <StatusBadge
+                    value={document.status === 'verified' ? 'Approved' : document.status === 'extracted' ? 'Human Review' : 'In Progress'}
+                    kind="application"
+                  />
+                </div>
               </div>
             ))}
           </div>

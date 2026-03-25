@@ -7,7 +7,11 @@ from ledger.registry.client import CompanyProfile, ComplianceFlag, FinancialYear
 
 
 class DummyStore:
-    pass
+    def __init__(self, streams: dict[str, list[dict]] | None = None):
+        self.streams = streams or {}
+
+    async def load_stream(self, stream_id: str):
+        return list(self.streams.get(stream_id, []))
 
 
 class DummyRegistry:
@@ -81,6 +85,52 @@ class MissingProfileRegistry(DummyRegistry):
     async def get_company(self, company_id: str):
         self.calls.append(("get_company", company_id))
         return None
+
+
+@pytest.mark.asyncio
+async def test_prepare_application_state_hydrates_from_loan_and_document_streams():
+    store = DummyStore(
+        {
+            "loan-APEX-0001": [
+                {
+                    "event_type": "ApplicationSubmitted",
+                    "payload": {
+                        "application_id": "APEX-0001",
+                        "applicant_id": "COMP-001",
+                        "requested_amount_usd": "250000.00",
+                        "loan_purpose": "equipment_financing",
+                        "loan_term_months": 36,
+                    },
+                }
+            ],
+            "docpkg-APEX-0001": [
+                {
+                    "event_type": "ExtractionCompleted",
+                    "payload": {
+                        "facts": {
+                            "total_revenue": 900000.0,
+                        }
+                    },
+                }
+            ],
+        }
+    )
+    registry = DummyRegistry()
+    agent = CreditAnalysisAgent(
+        agent_id="agent-1",
+        agent_type="credit_analysis",
+        store=store,
+        registry=registry,
+        client=None,
+    )
+
+    prepared = await agent._prepare_application_state("APEX-0001")
+
+    assert prepared["applicant_id"] == "COMP-001"
+    assert prepared["loan_amount"] == 250000.0
+    assert prepared["loan_term_months"] == 36
+    assert prepared["loan_purpose"] == "equipment_financing"
+    assert prepared["annual_income"] == 900000.0
 
 
 @pytest.mark.asyncio

@@ -167,12 +167,12 @@ export function DashboardClient({ applications }: { applications: LoanApplicatio
         <Card title="Demo notes" eyebrow="Integration ready">
           <div className="space-y-3 text-sm leading-6 text-slate-600">
             <p>
-              The dashboard is wired to mock data now, but the fetch layer is isolated in <code>src/lib/ledger-api.ts</code>.
+              The dashboard reads from the Python backend when <code>NEXT_PUBLIC_LEDGER_API_BASE_URL</code> is set.
             </p>
             <p>
-              When the Python backend is ready, point <code>NEXT_PUBLIC_LEDGER_API_BASE_URL</code> at your thin FastAPI or MCP adapter.
+              Point <code>NEXT_PUBLIC_LEDGER_API_BASE_URL</code> at your thin FastAPI or MCP adapter to use the live data.
             </p>
-            <p>The UI components, routes, and data types are already separated so the backend swap should be straightforward.</p>
+            <p>The UI components, routes, and data types are already separated, so the backend swap is already in place.</p>
           </div>
         </Card>
       </div>

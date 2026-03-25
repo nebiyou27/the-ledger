@@ -1,103 +1,99 @@
 import {
-  agentPerformance,
-  applications,
-  complianceRows,
-  eventThroughputSnapshot,
-  manualReviewBacklogSnapshot,
-  projectionLagSnapshot,
-  replayProgressSnapshot,
-  streamSizeSnapshot,
-  reviewQueue,
-  timelineEvents
-} from '@/data/mock-data'
-import {
+  AgentPerformanceRecord,
   EventThroughputSnapshot,
   LoanApplication,
   ManualReviewBacklogSnapshot,
   ProjectionLagSnapshot,
   ReplayProgressSnapshot,
+  ComplianceRowView,
   ReviewQueueItem,
+  TimelineEvent,
   StreamSizeSnapshot
 } from '@/types/loan'
 
-const baseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
+export const ledgerApiBaseUrl = process.env.NEXT_PUBLIC_LEDGER_API_BASE_URL?.replace(/\/$/, '')
+const ledgerApiInternalBaseUrl = process.env.LEDGER_API_INTERNAL_URL?.replace(/\/$/, '') ?? ledgerApiBaseUrl
 const apiKey = process.env.NEXT_PUBLIC_LEDGER_API_KEY?.trim()
 
-async function loadOrMock<T>(path: string, fallback: T): Promise<T> {
+function resolveBaseUrl() {
+  const baseUrl = typeof window === 'undefined' ? ledgerApiInternalBaseUrl : ledgerApiBaseUrl
   if (!baseUrl) {
-    return fallback
+    throw new Error('NEXT_PUBLIC_LEDGER_API_BASE_URL is not configured.')
   }
+  return baseUrl
+}
 
-  try {
-    const response = await fetch(`${baseUrl}${path}`, {
-      cache: 'no-store',
-      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
-    })
-
-    if (!response.ok) {
-      return fallback
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const baseUrl = resolveBaseUrl()
+  const response = await fetch(`${baseUrl}${path}`, {
+    cache: 'no-store',
+    ...init,
+    headers: {
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...(init?.headers ?? {})
     }
-
-    return (await response.json()) as T
-  } catch {
-    return fallback
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const detail = payload?.detail ?? payload?.message ?? `Request failed with status ${response.status}`
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
   }
+  return (await response.json()) as T
 }
 
 export async function listApplications() {
-  return loadOrMock<LoanApplication[]>('/applications', applications)
+  return fetchJson<LoanApplication[]>('/applications')
 }
 
 export async function getApplicationById(id: string) {
-  if (!baseUrl) {
-    return applications.find((application) => application.id === id) ?? null
+  try {
+    return await fetchJson<LoanApplication>(`/applications/${id}`)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('status 404')) {
+      return null
+    }
+    throw error
   }
-
-  return loadOrMock<LoanApplication | null>(`/applications/${id}`, null)
 }
 
 export async function listTimelineEvents() {
-  return loadOrMock('/timeline', timelineEvents)
+  return fetchJson<TimelineEvent[]>('/timeline')
 }
 
 export async function listReviewQueue() {
-  return loadOrMock<ReviewQueueItem[]>('/review-queue', reviewQueue)
+  return fetchJson<ReviewQueueItem[]>('/review-queue')
 }
 
 export async function listManualReviewBacklogMetrics() {
-  return loadOrMock<ManualReviewBacklogSnapshot>('/review-queue/metrics', manualReviewBacklogSnapshot)
+  return fetchJson<ManualReviewBacklogSnapshot>('/review-queue/metrics')
 }
 
 export async function listComplianceRows() {
-  return loadOrMock('/compliance', complianceRows)
+  return fetchJson<ComplianceRowView[]>('/compliance')
 }
 
 export async function listAgentPerformance() {
-  return loadOrMock('/agents', agentPerformance)
+  return fetchJson<AgentPerformanceRecord[]>('/agents')
 }
 
 export async function listProjectionLag() {
-  return loadOrMock<ProjectionLagSnapshot>('/projections/lag', projectionLagSnapshot)
+  return fetchJson<ProjectionLagSnapshot>('/projections/lag')
 }
 
 export async function getReplayProgress() {
-  return loadOrMock<ReplayProgressSnapshot>('/replay/progress', replayProgressSnapshot)
+  return fetchJson<ReplayProgressSnapshot>('/replay/progress')
 }
 
 export async function listEventThroughput() {
-  return loadOrMock<EventThroughputSnapshot>('/metrics/events', eventThroughputSnapshot)
+  return fetchJson<EventThroughputSnapshot>('/metrics/events')
 }
 
 export async function listStreamSizes() {
-  return loadOrMock<StreamSizeSnapshot>('/metrics/streams', streamSizeSnapshot)
+  return fetchJson<StreamSizeSnapshot>('/metrics/streams')
 }
 
 export async function refreshProjections() {
-  if (!baseUrl) {
-    return { ok: true, mock: true as const }
-  }
-
-  const response = await fetch(`${baseUrl}/refresh`, {
+  const response = await fetch(`${resolveBaseUrl()}/refresh`, {
     method: 'POST',
     cache: 'no-store',
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined
@@ -113,11 +109,7 @@ export async function refreshProjections() {
 }
 
 export async function submitIntakeApplication(formData: FormData) {
-  if (!baseUrl) {
-    throw new Error('Mock data mode is active. Set NEXT_PUBLIC_LEDGER_API_BASE_URL to submit a real application.')
-  }
-
-  const response = await fetch(`${baseUrl}/applications/intake`, {
+  const response = await fetch(`${resolveBaseUrl()}/applications/intake`, {
     method: 'POST',
     cache: 'no-store',
     headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
@@ -139,6 +131,7 @@ export async function submitIntakeApplication(formData: FormData) {
       document_id: string
       filename: string
       file_path: string
+      download_url?: string | null
       file_size_bytes: number
       file_hash: string
       document_type: string
@@ -149,6 +142,6 @@ export async function submitIntakeApplication(formData: FormData) {
   }
 }
 
-export const dataSourceNote = baseUrl
-  ? `Connected to ${baseUrl}`
-  : 'Mock data mode: set NEXT_PUBLIC_LEDGER_API_BASE_URL to connect the Python backend.'
+export const dataSourceNote = ledgerApiBaseUrl
+  ? `Connected to ${ledgerApiBaseUrl}`
+  : 'Set NEXT_PUBLIC_LEDGER_API_BASE_URL to connect the Python backend.'

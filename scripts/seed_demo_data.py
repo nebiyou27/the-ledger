@@ -198,7 +198,11 @@ def _read_financial_summary(documents_dir: Path, company_id: str) -> dict[str, f
             value = row.get("value")
             if value in (None, ""):
                 continue
-            values[field] = float(value)
+            try:
+                values[field] = float(value)
+            except (TypeError, ValueError):
+                # Some summary rows are booleans or other non-numeric checks.
+                continue
     return values
 
 

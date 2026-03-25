@@ -8,6 +8,7 @@ import re
 import sys
 import tempfile
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from ledger.agents.stub_agents import (
 )
 from ledger.event_store import EventStore
 from ledger.registry.client import ApplicantRegistryClient
+from ledger.schema.events import FraudScreeningRequested
 
 
 SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "seed_events.jsonl"
@@ -421,6 +423,25 @@ async def run_pipeline(args: argparse.Namespace) -> int:
             except Exception as exc:
                 print(f"[{phase}] failed: {exc}")
                 return 1
+
+            if phase == "credit":
+                loan_stream_id = f"loan-{args.app}"
+                has_fraud_request = await _agent_done(store, loan_stream_id, "FraudScreeningRequested")
+                has_credit_approval = await _agent_done(store, loan_stream_id, "LOAN_APPROVED")
+                if has_credit_approval and not has_fraud_request:
+                    expected_version = await store.stream_version(loan_stream_id)
+                    await store.append(
+                        loan_stream_id,
+                        [
+                            FraudScreeningRequested(
+                                application_id=args.app,
+                                requested_at=datetime.now(timezone.utc),
+                                triggered_by_event_id=f"credit-{args.app}",
+                            ).to_store_dict()
+                        ],
+                        expected_version=expected_version,
+                    )
+                    print("[credit] synthesized FraudScreeningRequested handoff")
 
             summary_streams = [
                 f"loan-{args.app}",

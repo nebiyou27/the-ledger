@@ -17,6 +17,7 @@ from typing import Any
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from ledger.auth import auth_enabled, get_bearer_token, resolve_principal
 from ledger.event_store import EventStore
@@ -93,6 +94,21 @@ def create_app() -> FastAPI:
         if row is None:
             raise HTTPException(status_code=404, detail="Application not found")
         return jsonable_encoder(row)
+
+    @app.get("/documents/{document_path:path}")
+    async def download_document(document_path: str, request: Request) -> Any:
+        _require_roles(request, {"viewer", "analyst", "reviewer", "compliance", "auditor", "admin"})
+        docs_root = _documents_root().resolve()
+        target = (docs_root / document_path).resolve()
+        try:
+            target.relative_to(docs_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail="Document not found") from exc
+
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        return FileResponse(path=target, filename=target.name)
 
     @app.get("/timeline")
     async def timeline(request: Request, application_id: str | None = None) -> Any:
@@ -262,7 +278,7 @@ def create_app() -> FastAPI:
                 loan_term_months=36,
                 submission_channel="web-upload",
                 contact_email=f"{company_id.lower()}@synthetic.example",
-                contact_name=str(company.get("name") or company_id),
+                contact_name=str(company.name or company_id),
                 submitted_at=now,
                 application_reference=application_id,
             ).to_store_dict(),
@@ -418,6 +434,17 @@ def _documents_root() -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _document_download_url(file_path: str) -> str | None:
+    docs_root = _documents_root().resolve()
+    target = Path(file_path).expanduser().resolve()
+    try:
+        relative_path = target.relative_to(docs_root)
+    except ValueError:
+        return None
+
+    return "/documents/" + "/".join(relative_path.parts)
+
+
 async def _next_application_id(backend: Backend) -> str:
     existing: set[str] = set()
     async for event in backend.store.load_all(from_position=0, event_types=["ApplicationSubmitted"]):
@@ -475,6 +502,7 @@ async def _persist_document_source(
         "document_format": document_format.value,
         "filename": filename,
         "file_path": str(destination),
+        "download_url": _document_download_url(str(destination)),
         "file_size_bytes": len(contents),
         "file_hash": file_hash,
         "fiscal_year": fiscal_year,
@@ -611,9 +639,14 @@ def _money(value: Any) -> str:
         return str(value)
 
 
-def _last_event(events: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
+def _event_key(value: Any) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+def _last_event(events: list[dict[str, Any]], event_type: str | list[str]) -> dict[str, Any]:
+    targets = [_event_key(event_type)] if isinstance(event_type, str) else [_event_key(item) for item in event_type]
     for event in reversed(events):
-        if str(event.get("event_type")) == event_type:
+        if _event_key(event.get("event_type")) in targets:
             return event
     return {}
 
@@ -761,11 +794,11 @@ def _attach_backend_methods(backend: Backend) -> None:
 
 
 async def _backend_get_application_detail(self: Backend, application_id: str) -> dict[str, Any] | None:
+    loan_events = await self.store.load_stream(f"loan-{application_id}")
     summary = self.runtime.application_summary.get_application(application_id)
     if summary is None:
-        return None
+        summary = _fallback_application_summary(application_id, loan_events)
 
-    loan_events = await self.store.load_stream(f"loan-{application_id}")
     credit_events = await self.store.load_stream(f"credit-{application_id}")
     fraud_events = await self.store.load_stream(f"fraud-{application_id}")
     compliance_state = await _compliance_state_with_fallback(self, application_id)
@@ -780,7 +813,7 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
     latest_financial = await _latest_financials(self.registry, applicant_id)
     compliance_flags = await _compliance_flags(self.registry, applicant_id)
 
-    credit_event = _last_event(credit_events, "CreditAnalysisCompleted")
+    credit_event = _last_event(credit_events, ["CreditAnalysisCompleted", "CREDIT_ANALYSIS_COMPLETED"])
     fraud_event = _last_event(fraud_events, "FraudScreeningCompleted")
     decision_event = _last_event(loan_events, "DecisionGenerated")
     approved_event = _last_event(loan_events, "ApplicationApproved")
@@ -836,6 +869,58 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
         "timeline": timeline,
         "complianceResults": compliance_rows,
         "extractedFacts": _build_extracted_facts(latest_financial, compliance_flags),
+    }
+
+
+def _fallback_application_summary(application_id: str, loan_events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    submitted = _last_event(loan_events, "ApplicationSubmitted")
+    if not submitted:
+        return None
+
+    submitted_payload = submitted.get("payload", {}) or {}
+    last_event = loan_events[-1] if loan_events else submitted
+    state = "SUBMITTED"
+    approved_amount_usd = None
+    decision = None
+    human_reviewer_id = None
+    final_decision_at = None
+    for event in loan_events:
+        etype = str(event.get("event_type"))
+        payload = event.get("payload", {}) or {}
+        if etype == "DecisionRequested":
+            state = "PENDING_DECISION"
+        elif etype == "HumanReviewRequested":
+            state = "PENDING_HUMAN_REVIEW"
+        elif etype == "DecisionGenerated":
+            decision = payload.get("recommendation")
+            state = "DECISION_GENERATED"
+        elif etype == "HumanReviewCompleted":
+            human_reviewer_id = payload.get("reviewer_id")
+            state = "HUMAN_REVIEW_COMPLETE"
+            final_decision_at = event.get("recorded_at")
+        elif etype == "ApplicationApproved":
+            approved_amount_usd = payload.get("approved_amount_usd")
+            state = "FINAL_APPROVED"
+            final_decision_at = event.get("recorded_at")
+        elif etype == "ApplicationDeclined":
+            state = "FINAL_DECLINED"
+            final_decision_at = event.get("recorded_at")
+
+    return {
+        "application_id": application_id,
+        "state": state,
+        "applicant_id": submitted_payload.get("applicant_id"),
+        "requested_amount_usd": submitted_payload.get("requested_amount_usd"),
+        "approved_amount_usd": approved_amount_usd,
+        "risk_tier": None,
+        "fraud_score": None,
+        "compliance_status": None,
+        "decision": decision,
+        "agent_sessions_completed": [],
+        "last_event_type": last_event.get("event_type"),
+        "last_event_at": last_event.get("recorded_at"),
+        "human_reviewer_id": human_reviewer_id,
+        "final_decision_at": final_decision_at,
     }
 
 
@@ -983,7 +1068,7 @@ async def _latest_financials(registry: ApplicantRegistryClient | None, company_i
         "annualRevenue": latest.total_revenue,
         "ebitda": latest.ebitda,
         "debt": latest.long_term_debt,
-        "cashFlow": latest.operating_cash_flow,
+        "cashFlow": getattr(latest, "operating_cash_flow", None),
     }
 
 
@@ -1032,11 +1117,11 @@ def _derive_outcome(
 
 
 async def _backend_get_application_detail(self: Backend, application_id: str) -> dict[str, Any] | None:
+    loan_events = await self.store.load_stream(f"loan-{application_id}")
     summary = self.runtime.application_summary.get_application(application_id)
     if summary is None:
-        return None
+        summary = _fallback_application_summary(application_id, loan_events)
 
-    loan_events = await self.store.load_stream(f"loan-{application_id}")
     credit_events = await self.store.load_stream(f"credit-{application_id}")
     fraud_events = await self.store.load_stream(f"fraud-{application_id}")
     compliance_state = await _compliance_state_with_fallback(self, application_id)
@@ -1051,7 +1136,7 @@ async def _backend_get_application_detail(self: Backend, application_id: str) ->
     latest_financial = await _latest_financials(self.registry, applicant_id)
     compliance_flags = await _compliance_flags(self.registry, applicant_id)
 
-    credit_event = _last_event(credit_events, "CreditAnalysisCompleted")
+    credit_event = _last_event(credit_events, ["CreditAnalysisCompleted", "CREDIT_ANALYSIS_COMPLETED"])
     fraud_event = _last_event(fraud_events, "FraudScreeningCompleted")
     decision_event = _last_event(loan_events, "DecisionGenerated")
     approved_event = _last_event(loan_events, "ApplicationApproved")
@@ -1228,7 +1313,7 @@ async def _latest_financials(registry: ApplicantRegistryClient | None, company_i
         "annualRevenue": latest.total_revenue,
         "ebitda": latest.ebitda,
         "debt": latest.long_term_debt,
-        "cashFlow": latest.operating_cash_flow,
+        "cashFlow": getattr(latest, "operating_cash_flow", None),
     }
 
 
@@ -1246,25 +1331,68 @@ def _manual_review_for(runtime: MCPRuntime, application_id: str) -> dict[str, An
     return None
 
 
+def _credit_payload_parts(event: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload = event.get("payload", {}) if event else {}
+    decision = payload.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+    return payload, decision
+
+
+def _confidence_score(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"low", "l"}:
+            return 60
+        if normalized in {"medium", "med", "m"}:
+            return 75
+        if normalized in {"high", "h"}:
+            return 90
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 1:
+        return int(round(numeric * 100))
+    return int(round(numeric))
+
+
 def _derive_confidence(*events: dict[str, Any]) -> int:
     for event in events:
-        payload = event.get("payload", {}) if event else {}
+        payload, decision = _credit_payload_parts(event)
+        if "credit_score" in payload:
+            score = _confidence_score(payload.get("credit_score"))
+            if score is not None:
+                return score
         if "confidence" in payload:
-            return int(round(float(payload.get("confidence", 0.0)) * 100))
-        decision = payload.get("decision")
-        if isinstance(decision, dict) and "confidence" in decision:
-            return int(round(float(decision.get("confidence", 0.0)) * 100))
+            score = _confidence_score(payload.get("confidence"))
+            if score is not None:
+                return score
+        if "confidence" in decision:
+            score = _confidence_score(decision.get("confidence"))
+            if score is not None:
+                return score
     return 0
 
 
 def _extract_risk_tier(*events: dict[str, Any]) -> str:
     for event in events:
-        payload = event.get("payload", {}) if event else {}
-        decision = payload.get("decision")
-        if isinstance(decision, dict):
-            risk = decision.get("risk_tier")
-            if risk:
-                return str(risk)
+        payload, decision = _credit_payload_parts(event)
+        risk = decision.get("risk_tier")
+        if risk:
+            return str(risk)
+        risk = payload.get("risk_tier")
+        if risk:
+            return str(risk)
+        policy_outcome = str(payload.get("policy_outcome") or "").upper()
+        if policy_outcome == "APPROVE":
+            return "LOW"
+        if policy_outcome == "MANUAL_REVIEW":
+            return "MEDIUM"
+        if policy_outcome == "REJECT":
+            return "HIGH"
     summary = events[-1] if events else {}
     decision = summary.get("decision") if isinstance(summary, dict) else None
     if isinstance(decision, dict):
@@ -1293,15 +1421,28 @@ def _build_analyses(
     compliance_state: dict[str, Any] | None,
     review_requested: dict[str, Any],
 ) -> dict[str, Any]:
-    credit_decision = (credit_event.get("payload", {}) or {}).get("decision", {})
+    credit_payload, credit_decision = _credit_payload_parts(credit_event)
+    credit_score = _confidence_score(credit_payload.get("credit_score"))
+    if credit_score is None:
+        credit_score = _confidence_score(credit_decision.get("confidence"))
+    if credit_score is None:
+        credit_score = _confidence_score(credit_payload.get("confidence"))
+    if credit_score is None:
+        credit_score = 0
+    credit_verdict = credit_decision.get("risk_tier") or credit_payload.get("risk_tier")
+    if not credit_verdict:
+        policy_outcome = str(credit_payload.get("policy_outcome") or "").upper()
+        credit_verdict = {"APPROVE": "LOW", "MANUAL_REVIEW": "MEDIUM", "REJECT": "HIGH"}.get(policy_outcome, "LOW")
+    credit_notes = credit_decision.get("rationale") or credit_payload.get("explanation") or "No credit analysis yet."
+    credit_reasons = credit_decision.get("key_concerns") or credit_payload.get("key_factors") or []
     fraud_payload = fraud_event.get("payload", {}) or {}
     compliance_state = compliance_state or {}
     return {
         "credit": {
-            "score": int(round(float(credit_decision.get("confidence", 0.0)) * 100)),
-            "verdict": _pretty_risk_tier(str(credit_decision.get("risk_tier", "LOW"))),
-            "notes": str(credit_decision.get("rationale", "No credit analysis yet.")),
-            "reasons": [str(item) for item in credit_decision.get("key_concerns", [])],
+            "score": credit_score,
+            "verdict": _pretty_risk_tier(str(credit_verdict)),
+            "notes": str(credit_notes),
+            "reasons": [str(item) for item in credit_reasons],
         },
         "fraud": {
             "score": int(round(float(fraud_payload.get("fraud_score", 0.0)) * 100)),
@@ -1323,14 +1464,16 @@ def _build_documents(loan_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for event in loan_events:
         if event.get("event_type") == "DocumentUploaded":
             payload = event.get("payload", {})
-            docs.append(
-                {
-                    "name": str(payload.get("filename", payload.get("document_id", "document"))),
-                    "type": str(payload.get("document_type", "Document")).replace("_", " ").title(),
-                    "size": f"{round(int(payload.get('file_size_bytes', 0)) / 1024)} KB" if payload.get("file_size_bytes") else "Unknown",
-                    "status": "verified",
-                }
-            )
+            document = {
+                "name": str(payload.get("filename", payload.get("document_id", "document"))),
+                "type": str(payload.get("document_type", "Document")).replace("_", " ").title(),
+                "size": f"{round(int(payload.get('file_size_bytes', 0)) / 1024)} KB" if payload.get("file_size_bytes") else "Unknown",
+                "status": "verified",
+            }
+            download_url = _document_download_url(str(payload.get("file_path") or ""))
+            if download_url is not None:
+                document["downloadUrl"] = download_url
+            docs.append(document)
     if not docs:
         docs.append({"name": "application_proposal.pdf", "type": "Proposal", "size": "Unknown", "status": "uploaded"})
     return docs

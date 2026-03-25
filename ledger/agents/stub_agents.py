@@ -1716,12 +1716,35 @@ class ComplianceAgent(BaseApexAgent):
         g.add_edge("write_output", END)
         return g.compile()
 
-    def _initial_state(self, application_id: str) -> ComplianceState:
-        return ComplianceState(
+    def _initial_state(
+        self,
+        application_id: str,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ) -> ComplianceState:
+        state = ComplianceState(
             application_id=application_id, session_id=self.session_id, applicant_id=None,
             company_profile=None, rule_results=[], has_hard_block=False,
             block_rule_id=None, errors=[], output_events=[], next_agent=None,
         )
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text  # type: ignore[index]
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work  # type: ignore[index]
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id  # type: ignore[index]
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point  # type: ignore[index]
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)  # type: ignore[arg-type]
+        return state
 
     async def _node_validate_inputs(self, state):
         t = time.time()
@@ -1966,8 +1989,17 @@ class DecisionOrchestratorAgent(BaseApexAgent):
         g.add_edge("write_output", END)
         return g.compile()
 
-    def _initial_state(self, application_id: str) -> OrchestratorState:
-        return OrchestratorState(
+    def _initial_state(
+        self,
+        application_id: str,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ) -> OrchestratorState:
+        state = OrchestratorState(
             application_id=application_id,
             session_id=self.session_id,
             upstream_events={},
@@ -1985,6 +2017,20 @@ class DecisionOrchestratorAgent(BaseApexAgent):
             next_agent=None,
             next_agent_triggered=None,
         )
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text  # type: ignore[index]
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work  # type: ignore[index]
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id  # type: ignore[index]
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point  # type: ignore[index]
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)  # type: ignore[arg-type]
+        return state
 
     @staticmethod
     def _coerce_float(value: Any) -> float | None:

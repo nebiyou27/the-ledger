@@ -5,7 +5,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'The Ledger | Loan Decisioning Demo',
-  description: 'Internal enterprise loan decisioning dashboard built on mock data with Python backend integration points.'
+  description: 'Internal enterprise loan decisioning dashboard that reads live backend data from the Python service.'
 }
 
 export default function RootLayout({

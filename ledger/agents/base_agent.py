@@ -121,16 +121,20 @@ class BaseApexAgent(ABC):
             raise RuntimeError("Failed to start agent session")
         for attempt in range(MAX_OCC_RETRIES):
             try:
+                prepared_state = await self._prepare_application_state(application_id, resume_from_session_id)
+                initial_state = self._initial_state(
+                    application_id,
+                    recovery_context_text=getattr(recovery_context, "context_text", None),
+                    recovery_pending_work=getattr(recovery_context, "pending_work", None),
+                    recovered_from_session_id=resume_from_session_id,
+                    recovery_point=recovery_point,
+                    resume_after_sequence=self._resume_after_sequence,
+                    resume_state_snapshot=self._resume_state_snapshot,
+                )
+                if prepared_state:
+                    initial_state.update(prepared_state)
                 result = await self._graph.ainvoke(
-                    self._initial_state(
-                        application_id,
-                        recovery_context_text=getattr(recovery_context, "context_text", None),
-                        recovery_pending_work=getattr(recovery_context, "pending_work", None),
-                        recovered_from_session_id=resume_from_session_id,
-                        recovery_point=recovery_point,
-                        resume_after_sequence=self._resume_after_sequence,
-                        resume_state_snapshot=self._resume_state_snapshot,
-                    )
+                    initial_state
                 )
                 await self._complete_session(result)
                 return
@@ -188,6 +192,10 @@ class BaseApexAgent(ABC):
             snapshot_state.pop("resume_after_sequence", None)
             state.update(snapshot_state)
         return state
+
+    async def _prepare_application_state(self, application_id: str, resume_from_session_id: str | None = None) -> dict:
+        """Allow subclasses to hydrate graph state before validation starts."""
+        return {}
 
     async def _start_session(self, app_id, context_source: str = "fresh", context_token_count: int = 1000):
         await self._append_session({"event_type":"AgentSessionStarted","event_version":1,"payload":{

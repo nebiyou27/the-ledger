@@ -25,20 +25,20 @@ class ManualReviewsProjection(Projection):
         self.reviews: Dict[str, Dict[str, Any]] = {}
 
     def get_event_types(self) -> list[str]:
-        return ["HumanReviewRequested", "HumanReviewCompleted"]
+        return ["HumanReviewRequested", "HumanReviewCompleted", "MANUAL_REVIEW_REQUIRED"]
 
     async def process_event(self, event: dict[str, Any]) -> None:
         event_type = event["event_type"]
         payload = event["payload"]
         app_id = payload["application_id"]
 
-        if event_type == "HumanReviewRequested":
+        if event_type in {"HumanReviewRequested", "MANUAL_REVIEW_REQUIRED"}:
             self.reviews[app_id] = {
                 "application_id": app_id,
                 "status": "PENDING",
-                "reason": payload.get("reason"),
+                "reason": payload.get("reason") or payload.get("confidence") or payload.get("policy_outcome"),
                 "assigned_to": payload.get("assigned_to"),
-                "requested_at": payload.get("requested_at"),
+                "requested_at": payload.get("requested_at") or event.get("recorded_at"),
             }
             logger.info(f"Manual review requested for {app_id}.")
 

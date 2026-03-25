@@ -237,7 +237,7 @@ export function NewApplicationForm() {
               {status === 'submitting' ? 'Uploading and running workflow...' : 'Upload and Run Workflow'}
             </button>
             <div className="text-sm text-slate-500">
-              Use a seeded company like <code>COMP-001</code> through <code>COMP-020</code> to line up with the demo data.
+              Use a seeded company from <code>COMP-001</code> through <code>COMP-020</code> to match the demo data.
             </div>
           </div>
 

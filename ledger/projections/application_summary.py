@@ -15,15 +15,19 @@ class ApplicationSummaryProjection(Projection):
         return event_type in {
             "ApplicationSubmitted",
             "CreditAnalysisCompleted",
+            "CREDIT_ANALYSIS_COMPLETED",
             "FraudScreeningCompleted",
             "ComplianceCheckCompleted",
             "DecisionGenerated",
             "HumanReviewCompleted",
             "ApplicationApproved",
             "ApplicationDeclined",
+            "LOAN_APPROVED",
+            "LOAN_REJECTED",
             "AgentSessionCompleted",
             "DecisionRequested",
             "HumanReviewRequested",
+            "MANUAL_REVIEW_REQUIRED",
         }
 
     async def process_event(self, event: dict[str, Any]) -> None:
@@ -60,9 +64,9 @@ class ApplicationSummaryProjection(Projection):
             row["state"] = "SUBMITTED"
             row["applicant_id"] = payload.get("applicant_id")
             row["requested_amount_usd"] = payload.get("requested_amount_usd")
-        elif etype == "CreditAnalysisCompleted":
+        elif etype in {"CreditAnalysisCompleted", "CREDIT_ANALYSIS_COMPLETED"}:
             decision = payload.get("decision") or {}
-            row["risk_tier"] = decision.get("risk_tier")
+            row["risk_tier"] = decision.get("risk_tier") or payload.get("risk_tier")
             row["state"] = "ANALYSIS_COMPLETE"
         elif etype == "FraudScreeningCompleted":
             row["fraud_score"] = payload.get("fraud_score")
@@ -72,9 +76,17 @@ class ApplicationSummaryProjection(Projection):
             row["state"] = "COMPLIANCE_COMPLETE"
         elif etype == "DecisionRequested":
             row["state"] = "PENDING_DECISION"
-        elif etype == "DecisionGenerated":
+        elif etype in {"DecisionGenerated", "LOAN_APPROVED", "LOAN_REJECTED", "MANUAL_REVIEW_REQUIRED"}:
             row["decision"] = payload.get("recommendation")
-            row["state"] = "DECISION_GENERATED"
+            if etype == "LOAN_APPROVED":
+                row["state"] = "FINAL_APPROVED"
+                row["approved_amount_usd"] = payload.get("approved_amount_usd")
+                row["final_decision_at"] = event.get("recorded_at")
+            elif etype == "LOAN_REJECTED":
+                row["state"] = "FINAL_DECLINED"
+                row["final_decision_at"] = event.get("recorded_at")
+            else:
+                row["state"] = "PENDING_HUMAN_REVIEW"
         elif etype == "HumanReviewRequested":
             row["state"] = "PENDING_HUMAN_REVIEW"
         elif etype == "HumanReviewCompleted":

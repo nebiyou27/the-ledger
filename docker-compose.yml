@@ -29,7 +29,7 @@ services:
       LOG_LEVEL: INFO
     volumes:
       - ./data:/app/data:ro
-      - ./documents:/app/documents:ro
+      - ./documents:/app/documents
     depends_on:
       db:
         condition: service_healthy
@@ -50,7 +50,7 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data:ro
-      - ./documents:/app/documents:ro
+      - ./documents:/app/documents
     depends_on:
       db:
         condition: service_healthy
@@ -72,6 +72,7 @@ services:
         NEXT_PUBLIC_LEDGER_API_KEY: dev-viewer-key
     environment:
       NEXT_PUBLIC_LEDGER_API_BASE_URL: http://localhost:8000
+      LEDGER_API_INTERNAL_URL: http://backend:8000
       NEXT_PUBLIC_LEDGER_API_KEY: dev-viewer-key
     ports:
       - "3000:3000"

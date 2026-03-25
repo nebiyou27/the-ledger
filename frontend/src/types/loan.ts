@@ -45,6 +45,15 @@ export interface ComplianceRuleResult {
   regulationVersion: string
 }
 
+export interface ComplianceRowView {
+  applicationId: string
+  businessName: string
+  regulationVersion: string
+  passedRules: Array<{ ruleId: string; label: string; note: string }>
+  failedRules: Array<{ ruleId: string; label: string; note: string }>
+  notes: string
+}
+
 export interface ReviewQueueItem {
   applicationId: string
   businessName: string
@@ -77,6 +86,7 @@ export interface DocumentItem {
   type: string
   size: string
   status: 'uploaded' | 'extracted' | 'verified'
+  downloadUrl?: string
 }
 
 export interface LoanApplication {

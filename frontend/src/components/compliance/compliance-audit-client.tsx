@@ -3,16 +3,8 @@
 import { useMemo, useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { StatusBadge } from '@/components/ui/status-badge'
+import { ComplianceRowView } from '@/types/loan'
 const asOfOptions = ['Decision Time', '2026-03-18', '2026-03-19', '2026-03-20']
-
-export interface ComplianceRowView {
-  applicationId: string
-  businessName: string
-  regulationVersion: string
-  passedRules: Array<{ ruleId: string; label: string; note: string }>
-  failedRules: Array<{ ruleId: string; label: string; note: string }>
-  notes: string
-}
 
 export function ComplianceAuditClient({ rows }: { rows: ComplianceRowView[] }) {
   const [applicationId, setApplicationId] = useState(rows[0]?.applicationId ?? '')

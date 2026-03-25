@@ -127,8 +127,17 @@ class CreditAnalysisAgent(BaseApexAgent):
         g.add_edge("write_output",             END)
         return g.compile()
 
-    def _initial_state(self, application_id: str) -> CreditState:
-        return CreditState(
+    def _initial_state(
+        self,
+        application_id: str,
+        recovery_context_text=None,
+        recovery_pending_work=None,
+        recovered_from_session_id=None,
+        recovery_point=None,
+        resume_after_sequence: int = -1,
+        resume_state_snapshot: dict | None = None,
+    ) -> CreditState:
+        state = CreditState(
             application_id=application_id, session_id=self.session_id,
             applicant_id=None, loan_amount=None, annual_income=None,
             loan_term_months=None, monthly_debt=None, annual_rate=None,
@@ -138,6 +147,74 @@ class CreditAnalysisAgent(BaseApexAgent):
             hard_gate=None, explanation=None, key_factors=None, confidence=None,
             errors=[], output_events=[], next_agent=None,
         )
+        if recovery_context_text is not None:
+            state["recovery_context_text"] = recovery_context_text  # type: ignore[index]
+        if recovery_pending_work is not None:
+            state["recovery_pending_work"] = recovery_pending_work  # type: ignore[index]
+        if recovered_from_session_id is not None:
+            state["recovered_from_session_id"] = recovered_from_session_id  # type: ignore[index]
+        if recovery_point is not None:
+            state["recovery_point"] = recovery_point  # type: ignore[index]
+        if resume_state_snapshot:
+            snapshot_state = dict(resume_state_snapshot)
+            snapshot_state.pop("session_id", None)
+            snapshot_state.pop("resume_after_sequence", None)
+            state.update(snapshot_state)
+        return state
+
+    async def _prepare_application_state(
+        self,
+        application_id: str,
+        resume_from_session_id: str | None = None,
+    ) -> dict[str, Any]:  # type: ignore[override]
+        """Hydrate the credit graph with values already present in the loan/document streams."""
+        del resume_from_session_id
+
+        if not hasattr(self.store, "load_stream"):
+            return {}
+
+        prepared: dict[str, Any] = {}
+        loan_stream_id = f"loan-{application_id}"
+        try:
+            loan_events = await self.store.load_stream(loan_stream_id)
+        except Exception:
+            loan_events = []
+
+        submitted_event = next(
+            (event for event in loan_events if event.get("event_type") == "ApplicationSubmitted"),
+            None,
+        )
+        if submitted_event is not None:
+            payload = dict(submitted_event.get("payload") or {})
+            applicant_id = str(payload.get("applicant_id") or "").strip()
+            if applicant_id:
+                prepared["applicant_id"] = applicant_id
+
+            requested_amount = payload.get("requested_amount_usd")
+            if requested_amount is None:
+                requested_amount = payload.get("loan_amount")
+            loan_amount = self._coerce_float(requested_amount)
+            if loan_amount is not None and loan_amount > 0:
+                prepared["loan_amount"] = loan_amount
+
+            loan_term_months = payload.get("loan_term_months")
+            if loan_term_months is not None:
+                try:
+                    prepared["loan_term_months"] = int(loan_term_months)
+                except (TypeError, ValueError):
+                    pass
+
+            loan_purpose = payload.get("loan_purpose")
+            if loan_purpose is not None:
+                prepared["loan_purpose"] = str(loan_purpose)
+
+        applicant_id = str(prepared.get("applicant_id") or "").strip()
+        if applicant_id:
+            annual_income = await self._resolve_annual_income(application_id, applicant_id)
+            if annual_income is not None and annual_income > 0:
+                prepared["annual_income"] = annual_income
+
+        return prepared
 
     # ── NODE 1: VALIDATE INPUTS ───────────────────────────────────────────────
     async def _node_validate_inputs(self, state: CreditState) -> CreditState:
@@ -906,6 +983,50 @@ Provide your analysis as JSON."""
             "write_output", ["credit_score", "policy_outcome"], ["events_written"], ms
         )
         return {**state, "output_events": events_written, "next_agent": None}
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    async def _resolve_annual_income(self, application_id: str, applicant_id: str) -> float | None:
+        doc_stream_id = f"docpkg-{application_id}"
+        try:
+            doc_events = await self.store.load_stream(doc_stream_id)
+        except Exception:
+            doc_events = []
+
+        for event in doc_events:
+            if event.get("event_type") != "ExtractionCompleted":
+                continue
+            facts = dict((event.get("payload") or {}).get("facts") or {})
+            annual_income = self._coerce_float(facts.get("annual_income"))
+            if annual_income is None:
+                annual_income = self._coerce_float(facts.get("total_revenue"))
+            if annual_income is not None and annual_income > 0:
+                return annual_income
+
+        if self.registry is None:
+            return None
+
+        try:
+            financial_rows = await self.registry.get_financial_history(applicant_id, years=[2022, 2023, 2024])
+        except Exception:
+            return None
+
+        if not financial_rows:
+            return None
+        latest = financial_rows[-1]
+        annual_income = self._coerce_float(getattr(latest, "total_revenue", None))
+        if annual_income is not None and annual_income > 0:
+            return annual_income
+        return None
 
     @staticmethod
     def _extract_event_timestamp(event: dict[str, Any]) -> datetime | None:
