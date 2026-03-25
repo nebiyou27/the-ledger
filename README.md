@@ -67,10 +67,19 @@ python scripts/demo_narr05.py --output-dir artifacts
 
 The demo output includes a regulatory package JSON and a short narrative report.
 
+Run the audit proof for a specific application and write machine-readable evidence:
+
+```bash
+python scripts/audit_application.py --application-id APEX-0027 --json --output artifacts/audit-APEX-0027.json
+```
+
+This report includes the full event timeline, current and point-in-time compliance snapshots, and cryptographic integrity verification.
+
 ## Scripts
 
 - `scripts/replay_projection.py` clears a projection checkpoint and replays that projection from `global_position = 0`; it requires `--confirm` to protect the current projection state.
 - For 2am ops triage, use the agent stuck-session surface: MCP resource `ledger://agents/stuck-sessions/{timeout_ms}` or API `GET /agents/stuck-sessions?timeout_ms=...` returns sessions that started but never completed; for Apex, start with `timeout_ms=900000` (15 minutes).
+- `artifacts/audit-APEX-0027.json` is the curated audit proof for the event store and is intentionally force-tracked in git.
 
 ## Testing
 

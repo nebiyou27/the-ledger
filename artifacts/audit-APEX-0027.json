@@ -1,0 +1,766 @@
+{
+  "summary": {
+    "application_id": "APEX-0027",
+    "event_count": 68,
+    "first_event_at": "2026-02-20T04:02:48.973705Z",
+    "last_event_at": "2026-03-14T04:12:12.749644Z",
+    "final_event_type": "AgentSessionCompleted",
+    "agent_actions": 30,
+    "compliance_checks": 1,
+    "human_review_requests": 0,
+    "human_review_completions": 0,
+    "integrity": "valid",
+    "compliance_source": "event-stream fallback"
+  },
+  "timeline": [
+    {
+      "timestamp": "2026-02-20T04:02:48.973705Z",
+      "event_type": "ApplicationSubmitted",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 1,
+      "global_position": 986,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"applicant_id\": \"COMP-069\", \"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T04:02:48.973705Z",
+      "event_type": "DocumentUploadRequested",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 2,
+      "global_position": 987,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T04:03:08.973705Z",
+      "event_type": "PackageCreated",
+      "stream_id": "docpkg-APEX-0027",
+      "stream_position": 1,
+      "global_position": 988,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:04:08.973705Z",
+      "event_type": "DocumentUploaded",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 3,
+      "global_position": 989,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:14:08.973705Z",
+      "event_type": "DocumentUploaded",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 4,
+      "global_position": 991,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:22:08.973705Z",
+      "event_type": "DocumentUploaded",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 5,
+      "global_position": 993,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:28:08.973705Z",
+      "event_type": "DocumentUploaded",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 6,
+      "global_position": 995,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:38:11.973705Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-document_processing-sess-doc-e50bf6e3",
+      "stream_position": 1,
+      "global_position": 997,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-e50bf6e3\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:38:13.973705Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-document_processing-sess-doc-e50bf6e3",
+      "stream_position": 2,
+      "global_position": 998,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-e50bf6e3\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:41:41.973705Z",
+      "event_type": "PackageReadyForAnalysis",
+      "stream_id": "docpkg-APEX-0027",
+      "stream_position": 13,
+      "global_position": 1011,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:41:41.973705Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-document_processing-sess-doc-e50bf6e3",
+      "stream_position": 8,
+      "global_position": 1012,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-e50bf6e3\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:41:49.973705Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-document_processing-sess-doc-e50bf6e3",
+      "stream_position": 9,
+      "global_position": 1013,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-e50bf6e3\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:41:54.973705Z",
+      "event_type": "CreditAnalysisRequested",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 7,
+      "global_position": 1014,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:45:57.973705Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-credit_analysis-sess-cre-75b3d7f8",
+      "stream_position": 1,
+      "global_position": 1015,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:45:59.973705Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-credit_analysis-sess-cre-75b3d7f8",
+      "stream_position": 2,
+      "global_position": 1016,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:45:59.973705Z",
+      "event_type": "CreditRecordOpened",
+      "stream_id": "credit-APEX-0027",
+      "stream_position": 1,
+      "global_position": 1017,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"applicant_id\": \"COMP-069\", \"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:04.973705Z",
+      "event_type": "HistoricalProfileConsumed",
+      "stream_id": "credit-APEX-0027",
+      "stream_position": 2,
+      "global_position": 1021,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:06.973705Z",
+      "event_type": "ExtractedFactsConsumed",
+      "stream_id": "credit-APEX-0027",
+      "stream_position": 3,
+      "global_position": 1023,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:33.973705Z",
+      "event_type": "CreditAnalysisCompleted",
+      "stream_id": "credit-APEX-0027",
+      "stream_position": 4,
+      "global_position": 1028,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:33.973705Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-credit_analysis-sess-cre-75b3d7f8",
+      "stream_position": 11,
+      "global_position": 1029,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:38.973705Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-credit_analysis-sess-cre-75b3d7f8",
+      "stream_position": 12,
+      "global_position": 1030,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-75b3d7f8\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:46:43.973705Z",
+      "event_type": "FraudScreeningRequested",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 8,
+      "global_position": 1031,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:50:46.973705Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-fraud_detection-sess-fra-c6530060",
+      "stream_position": 1,
+      "global_position": 1032,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:50:47.973705Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-fraud_detection-sess-fra-c6530060",
+      "stream_position": 2,
+      "global_position": 1033,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:50:47.973705Z",
+      "event_type": "FraudScreeningInitiated",
+      "stream_id": "fraud-APEX-0027",
+      "stream_position": 1,
+      "global_position": 1034,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:51:40.973705Z",
+      "event_type": "FraudScreeningCompleted",
+      "stream_id": "fraud-APEX-0027",
+      "stream_position": 2,
+      "global_position": 1040,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"recommendation\": \"PROCEED\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:51:40.973705Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-fraud_detection-sess-fra-c6530060",
+      "stream_position": 8,
+      "global_position": 1041,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:51:40.973705Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-fraud_detection-sess-fra-c6530060",
+      "stream_position": 9,
+      "global_position": 1042,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-c6530060\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:51:43.973705Z",
+      "event_type": "ComplianceCheckRequested",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 9,
+      "global_position": 1043,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:45.973705Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-compliance-sess-com-90fb3ede",
+      "stream_position": 1,
+      "global_position": 1044,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:46.973705Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-compliance-sess-com-90fb3ede",
+      "stream_position": 2,
+      "global_position": 1045,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:46.973705Z",
+      "event_type": "ComplianceCheckInitiated",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 1,
+      "global_position": 1046,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:48.973705Z",
+      "event_type": "ComplianceRulePassed",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 2,
+      "global_position": 1048,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:50.973705Z",
+      "event_type": "ComplianceRulePassed",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 3,
+      "global_position": 1050,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:52.973705Z",
+      "event_type": "ComplianceRulePassed",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 4,
+      "global_position": 1052,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:54.973705Z",
+      "event_type": "ComplianceRuleFailed",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 5,
+      "global_position": 1054,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:56.973705Z",
+      "event_type": "ComplianceRulePassed",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 6,
+      "global_position": 1056,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:54:58.973705Z",
+      "event_type": "ComplianceRuleNoted",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 7,
+      "global_position": 1058,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:55:03.973705Z",
+      "event_type": "ComplianceCheckCompleted",
+      "stream_id": "compliance-APEX-0027",
+      "stream_position": 8,
+      "global_position": 1059,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"overall_verdict\": \"CONDITIONAL\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:55:03.973705Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-compliance-sess-com-90fb3ede",
+      "stream_position": 9,
+      "global_position": 1060,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:55:03.973705Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-compliance-sess-com-90fb3ede",
+      "stream_position": 10,
+      "global_position": 1061,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-90fb3ede\"}"
+    },
+    {
+      "timestamp": "2026-02-20T21:55:06.973705Z",
+      "event_type": "DecisionRequested",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 10,
+      "global_position": 1062,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:09.973705Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-decision_orchestrator-sess-dec-dc692571",
+      "stream_position": 1,
+      "global_position": 1063,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-dc692571\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:11.973705Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-decision_orchestrator-sess-dec-dc692571",
+      "stream_position": 2,
+      "global_position": 1064,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-dc692571\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:40.973705Z",
+      "event_type": "DecisionGenerated",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 11,
+      "global_position": 1070,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"confidence\": 0.75, \"recommendation\": \"DECLINE\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:50.973705Z",
+      "event_type": "ApplicationDeclined",
+      "stream_id": "loan-APEX-0027",
+      "stream_position": 12,
+      "global_position": 1071,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:50.973705Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-decision_orchestrator-sess-dec-dc692571",
+      "stream_position": 8,
+      "global_position": 1072,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-dc692571\"}"
+    },
+    {
+      "timestamp": "2026-02-20T22:03:55.973705Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-decision_orchestrator-sess-dec-dc692571",
+      "stream_position": 9,
+      "global_position": 1073,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-dc692571\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:52:00.749644Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-document_processing-sess-doc-4f2f82b8",
+      "stream_position": 1,
+      "global_position": 2280,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-4f2f82b8\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:52:02.749644Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-document_processing-sess-doc-4f2f82b8",
+      "stream_position": 2,
+      "global_position": 2281,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-4f2f82b8\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:54:59.749644Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-document_processing-sess-doc-4f2f82b8",
+      "stream_position": 8,
+      "global_position": 2295,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-4f2f82b8\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:55:07.749644Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-document_processing-sess-doc-4f2f82b8",
+      "stream_position": 9,
+      "global_position": 2296,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-doc-4f2f82b8\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:58:15.749644Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-credit_analysis-sess-cre-f8892b03",
+      "stream_position": 1,
+      "global_position": 2298,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-f8892b03\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:58:17.749644Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-credit_analysis-sess-cre-f8892b03",
+      "stream_position": 2,
+      "global_position": 2299,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-f8892b03\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:59:08.749644Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-credit_analysis-sess-cre-f8892b03",
+      "stream_position": 11,
+      "global_position": 2312,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-f8892b03\"}"
+    },
+    {
+      "timestamp": "2026-03-14T03:59:13.749644Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-credit_analysis-sess-cre-f8892b03",
+      "stream_position": 12,
+      "global_position": 2313,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-cre-f8892b03\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:04:21.749644Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-fraud_detection-sess-fra-d77df5e5",
+      "stream_position": 1,
+      "global_position": 2315,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-d77df5e5\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:04:22.749644Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-fraud_detection-sess-fra-d77df5e5",
+      "stream_position": 2,
+      "global_position": 2316,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-d77df5e5\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:04:47.749644Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-fraud_detection-sess-fra-d77df5e5",
+      "stream_position": 8,
+      "global_position": 2324,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-d77df5e5\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:04:47.749644Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-fraud_detection-sess-fra-d77df5e5",
+      "stream_position": 9,
+      "global_position": 2325,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-fra-d77df5e5\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:07:52.749644Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-compliance-sess-com-02276d35",
+      "stream_position": 1,
+      "global_position": 2327,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-02276d35\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:07:53.749644Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-compliance-sess-com-02276d35",
+      "stream_position": 2,
+      "global_position": 2328,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-02276d35\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:08:10.749644Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-compliance-sess-com-02276d35",
+      "stream_position": 9,
+      "global_position": 2343,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-02276d35\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:08:10.749644Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-compliance-sess-com-02276d35",
+      "stream_position": 10,
+      "global_position": 2344,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-com-02276d35\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:11:16.749644Z",
+      "event_type": "AgentSessionStarted",
+      "stream_id": "agent-decision_orchestrator-sess-dec-79b81d3b",
+      "stream_position": 1,
+      "global_position": 2346,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-79b81d3b\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:11:18.749644Z",
+      "event_type": "AgentInputValidated",
+      "stream_id": "agent-decision_orchestrator-sess-dec-79b81d3b",
+      "stream_position": 2,
+      "global_position": 2347,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-79b81d3b\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:12:07.749644Z",
+      "event_type": "AgentOutputWritten",
+      "stream_id": "agent-decision_orchestrator-sess-dec-79b81d3b",
+      "stream_position": 8,
+      "global_position": 2355,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-79b81d3b\"}"
+    },
+    {
+      "timestamp": "2026-03-14T04:12:12.749644Z",
+      "event_type": "AgentSessionCompleted",
+      "stream_id": "agent-decision_orchestrator-sess-dec-79b81d3b",
+      "stream_position": 9,
+      "global_position": 2356,
+      "correlation_id": null,
+      "causation_id": null,
+      "payload_preview": "{\"application_id\": \"APEX-0027\", \"session_id\": \"sess-dec-79b81d3b\"}"
+    }
+  ],
+  "integrity": {
+    "chain_valid": true,
+    "tamper_detected": false,
+    "events_verified": 12,
+    "integrity_hash": "7fa63bedd7aa707f9c24e2a99198d70f3de8be9c2445d3a113bb924a4da76e68",
+    "previous_hash": null,
+    "audit_stream_version": -1
+  },
+  "application_id": "APEX-0027",
+  "current_compliance": {
+    "application_id": "APEX-0027",
+    "session_id": "sess-com-90fb3ede",
+    "regulation_set_version": "2026-Q1",
+    "rules_to_evaluate": [
+      "REG-001",
+      "REG-002",
+      "REG-003",
+      "REG-004",
+      "REG-005",
+      "REG-006"
+    ],
+    "passed_rules": [
+      {
+        "rule_id": "REG-001",
+        "rule_name": "Bank Secrecy Act (BSA)",
+        "rule_version": "2026-Q1-v1",
+        "evidence_hash": "1bfc777c52a9d613"
+      },
+      {
+        "rule_id": "REG-002",
+        "rule_name": "OFAC Sanctions",
+        "rule_version": "2026-Q1-v1",
+        "evidence_hash": "fbecfb07a467149f"
+      },
+      {
+        "rule_id": "REG-003",
+        "rule_name": "Jurisdiction Eligibility",
+        "rule_version": "2026-Q1-v1",
+        "evidence_hash": "b3ee2c565e57eb1c"
+      },
+      {
+        "rule_id": "REG-005",
+        "rule_name": "Operating History",
+        "rule_version": "2026-Q1-v1",
+        "evidence_hash": "b606be9d2cea86d6"
+      }
+    ],
+    "failed_rules": [
+      {
+        "rule_id": "REG-004",
+        "rule_name": "Legal Entity Eligibility",
+        "rule_version": "2026-Q1-v1",
+        "failure_reason": "Legal Entity Eligibility check failed.",
+        "is_hard_block": false
+      }
+    ],
+    "noted_rules": [
+      {
+        "rule_id": "REG-006",
+        "rule_name": "CRA Consideration",
+        "note_type": "CRA_CONSIDERATION",
+        "note_text": "Applicant jurisdiction qualifies for CRA consideration."
+      }
+    ],
+    "overall_verdict": "CONDITIONAL",
+    "has_hard_block": false,
+    "last_updated_at": "2026-02-20 21:55:03.973705+00:00"
+  },
+  "compliance_as_of": null
+}
