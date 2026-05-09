@@ -1,5 +1,11 @@
 # The Ledger
 
+**What** - The Ledger is an event-sourced loan decisioning system that records, projects, and audits the full lifecycle of credit applications.
+
+**How** - It uses append-only event streams, optimistic concurrency, a transactional outbox, asynchronous projections, PostgreSQL-backed persistence, and Dockerized API/frontend services.
+
+**Why** - It provides replayable, compliance-friendly decision evidence so loan outcomes can be explained, verified, and reconstructed over time.
+
 Event-sourced loan decisioning system for the Week 5 challenge.
 
 The repository models a multi-step credit workflow with:
